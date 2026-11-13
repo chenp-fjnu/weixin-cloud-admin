@@ -159,31 +159,23 @@ function normFile(f) {
   };
 }
 
-// 列举某前缀下「一级」内容（子目录 + 直属文件）。listDirectoryFiles 递归返回该前缀下对象，
-// 这里按首个路径段聚合成子目录，剩余作为本层文件。
-async function storageListOneLevel(prefix, limit, envId) {
+// 列举某前缀下「一级」内容（子目录 + 直属文件）。
+// 用 listCurrentDirectory（COS Delimiter 不递归，只拉当前层），替代 listDirectoryFiles 的
+// 递归全量遍历——后者在大目录下会把整棵树拉完才返回，导致首屏卡死。
+async function storageListOneLevel(prefix, envId) {
   const m = getManager(envId);
   const storage = m.storage;
-  let raw;
-  try { raw = await storage.listDirectoryFiles(prefix, limit || 1000); }
+  let res;
+  try { res = await storage.listCurrentDirectory(prefix); }
   catch (e) { throw new AppError('云存储列举失败：' + (e.message || e), 'STORAGE'); }
-  if (raw && raw.Files) raw = raw.Files;
-  if (!Array.isArray(raw)) raw = raw || [];
-  let p = prefix || '';
-  if (p && !p.endsWith('/')) p += '/';
-  const files = [];
-  const dirSet = new Set();
-  for (const f of raw) {
-    const name = f.Key || f.key || '';
-    if (!name || name === p) continue; // 跳过目录本身
-    if (name.endsWith('/')) { dirSet.add(name); continue; }
-    const rest = name.slice(p.length);
-    const slash = rest.indexOf('/');
-    if (slash > 0) dirSet.add(p + rest.slice(0, slash)); // 子目录
-    else { const nf = normFile(f); if (nf) files.push(nf); }
-  }
-  files.sort((a, b) => a.name < b.name ? -1 : 1);
-  return { files, prefixes: Array.from(dirSet).sort() };
+  const files = (res && res.files || [])
+    .map(normFile).filter(Boolean)
+    .sort((a, b) => a.name < b.name ? -1 : 1);
+  const prefixes = (res && res.directories || [])
+    .map(d => { let dp = d || ''; if (dp && !dp.endsWith('/')) dp += '/'; return dp; })
+    .filter(Boolean)
+    .sort();
+  return { files, prefixes };
 }
 
 // 递归拉取某前缀下所有文件（用于「概览采样」与「子目录聚合」）
@@ -220,15 +212,15 @@ async function storageTempUrls(cloudPaths, envId) {
   catch (e) { throw new AppError('获取临时链接失败：' + (e.message || e), 'STORAGE'); }
   const out = {};
   const arr = Array.isArray(res) ? res : (res && res.data) || [];
-  arr.forEach((f, i) => {
+  // 仅按 fileId 精确映射（不再用数组下标回退：SDK 跳过某项时下标会错位，导致把
+  // 某文件的 URL 错配给另一个文件）。fileId 形如 cloud://<env>.<bucket>/<相对路径>。
+  arr.forEach(f => {
     const url = f && (f.url || f.URL);
-    if (!url) return;
-    const rawId = f.fileId || f.fileID || '';
-    if (rawId) out[rawId] = url;
-    // 响应的 fileId 是 cloud://<env>.<bucket>/<相对路径> 形态，剥掉前缀即前端使用的相对 cloudPath
+    const rawId = f && (f.fileId || f.fileID || '');
+    if (!url || !rawId) return;
+    out[rawId] = url;
     const rel = rawId.replace(/^cloud:\/\/[^/]+\//i, '');
-    if (rel && cloudPaths.includes(rel)) out[rel] = url;
-    else { const req = list[i] && list[i].cloudPath; if (req) out[req] = url; }
+    if (rel) out[rel] = url; // 前端使用的相对 cloudPath 形态
   });
   return out;
 }
@@ -236,7 +228,8 @@ async function storageTempUrls(cloudPaths, envId) {
 async function storageDelete(cloudPaths, envId) {
   const m = getManager(envId);
   const storage = m.storage;
-  const list = cloudPaths.slice(0, 50);
+  const list = Array.from(new Set(cloudPaths)); // 去重；不再静默截断，前端按批 50 个调用
+  if (!list.length) return { deleted: 0 };
   try { await storage.deleteFile(list); }
   catch (e) { throw new AppError('删除云文件失败：' + (e.message || e), 'STORAGE'); }
   return { deleted: list.length };
@@ -266,8 +259,12 @@ function buildFilter(envId, params) {
   const field = (params.get('field') || '').trim();
   const q = (params.get('q') || '').trim();
   if (!field || !q) return null;
+  // 正则长度限制：Mongo 对 regexp 有上限，超长会慢查或报错
+  if (q.length > 200) throw new AppError('筛选正则过长（上限 200 字符）', 'BADREGEX');
+  // 字段名白名单，避免误构造嵌套/操作符路径
+  if (!/^[a-zA-Z0-9_.]+$/.test(field)) throw new AppError('筛选字段名非法：' + field, 'BADREGEX');
   try { return { [field]: db(envId).RegExp({ regexp: q, options: 'i' }) }; }
-  catch (e) { return null; }
+  catch (e) { throw new AppError('筛选正则非法：' + (e.message || e), 'BADREGEX'); }
 }
 async function listCollectionNames(envId) {
   try {
@@ -316,16 +313,26 @@ const MIME = {
   '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2'
 };
-function serveStatic(res, pathname) {
-  let rel = decodeURIComponent(pathname);
+function serveStatic(req, res, pathname) {
+  let rel;
+  try { rel = decodeURIComponent(pathname); }
+  catch (e) { return sendError(res, 400, 'bad path'); }
   if (rel === '/' || rel === '') rel = '/index.html';
-  const filePath = path.join(__dirname, 'public', rel);
-  if (!filePath.startsWith(path.join(__dirname, 'public'))) return sendError(res, 403, 'forbidden');
-  fs.readFile(filePath, (err, data) => {
-    if (err) return sendError(res, 404, 'not found: ' + pathname);
-    const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
-    res.end(data);
+  const publicDir = path.join(__dirname, 'public');
+  // path.resolve 归一化后做「前缀 + 分隔符」校验，杜绝 ../ 与兄弟目录（如 public-evil）绕过
+  const filePath = path.resolve(publicDir, '.' + rel);
+  if (filePath !== publicDir && !filePath.startsWith(publicDir + path.sep)) return sendError(res, 403, 'forbidden');
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = MIME[ext] || 'application/octet-stream';
+  fs.stat(filePath, (err, stat) => {
+    if (err || !stat.isFile()) return sendError(res, 404, 'not found: ' + pathname);
+    const etag = '"' + stat.mtimeMs.toString(16) + '-' + stat.size.toString(16) + '"';
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, { 'ETag': etag, 'Cache-Control': 'no-cache' }); return res.end(); }
+    fs.readFile(filePath, (err2, data) => {
+      if (err2) return sendError(res, 404, 'not found: ' + pathname);
+      res.writeHead(200, { 'Content-Type': mime, 'ETag': etag, 'Cache-Control': 'no-cache' });
+      res.end(data);
+    });
   });
 }
 
@@ -348,10 +355,11 @@ const handlers = {
     const allNames = await listCollectionNames(envId);
     const counts = {};
     const details = [];
-    for (const name of allNames) {
+    // 并行统计各集合文档数（原为串行 await，N 个集合即 N 次往返）
+    await Promise.all(allNames.map(async (name) => {
       try { counts[name] = await collectionCount(envId, name, null); }
       catch (e) { counts[name] = 'ERR'; details.push(name + ': ' + e.message); }
-    }
+    }));
     // 存储概览：扫描根目录，统计顶层目录数与总文件数
     let storage = { topDirs: 0, totalFiles: -1, totalSize: 0, error: '' };
     try {
@@ -382,12 +390,15 @@ const handlers = {
     const size = Math.min(200, Math.max(1, parseInt(params.get('size') || '20', 10)));
     const sort = (params.get('sort') || '').trim();
     const sortDir = (params.get('sortDir') || 'asc').trim();
-    const filter = buildFilter(envId, params);
     try {
+      const filter = buildFilter(envId, params);
       const total = await collectionCount(envId, name, filter);
       const docs = await collectionQuery(envId, name, { skip: (page - 1) * size, limit: size, sort, sortDir, filter });
       return sendJson(res, 200, { name, total, page, size, docs, hasMore: page * size < total });
-    } catch (e) { return sendError(res, 500, e.message); }
+    } catch (e) {
+      if (e && e.name === 'AppError' && e.code === 'BADREGEX') return sendError(res, 400, e.message);
+      return sendError(res, 500, e.message);
+    }
   },
 
   'GET /api/doc': async (req, res, params) => {
@@ -427,8 +438,12 @@ const handlers = {
     let body;
     try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, '请求体须为 JSON 对象');
+    const doc = Object.assign({}, body);
+    delete doc._id; // 整包替换语义（set）：_id 不可变更
     try {
-      await db(envId).collection(name).doc(id).update(body);
+      // 用 set() 整体替换，与前端「编辑整包 JSON」的所见即所得一致；
+      // 原 update() 是部分更新，删字段不生效且易留残留字段。
+      await db(envId).collection(name).doc(id).set(doc);
       return sendJson(res, 200, { ok: true });
     } catch (e) { return sendError(res, 500, e.message); }
   },
@@ -448,9 +463,8 @@ const handlers = {
   'GET /api/storage': async (req, res, params) => {
     const envId = resolveEnv(params);
     const prefix = (params.get('prefix') || '').trim();
-    const maxKeys = Math.min(1000, Math.max(1, parseInt(params.get('maxKeys') || '1000', 10)));
     try {
-      const r = await storageListOneLevel(prefix, maxKeys, envId);
+      const r = await storageListOneLevel(prefix, envId);
       return sendJson(res, 200, { prefix, files: r.files, prefixes: r.prefixes });
     } catch (e) { return sendError(res, 500, e.message); }
   },
@@ -513,7 +527,7 @@ const server = http.createServer(async (req, res) => {
       if (!h) return sendError(res, 404, 'no handler: ' + method + ' ' + pathname);
       return await h(req, res, u.searchParams);
     }
-    return serveStatic(res, pathname);
+    return serveStatic(req, res, pathname);
   } catch (e) {
     const isApp = e && e.name === 'AppError';
     let code;
@@ -524,6 +538,19 @@ const server = http.createServer(async (req, res) => {
     else { try { res.end(); } catch (_) {} }
   }
 });
+
+// 启动前校验：非本机回环地址且未配置 ADMIN_TOKEN 时拒绝启动，避免误配置对外暴露导致裸奔
+{
+  const loopback = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1' || HOST === '0:0:0:0:0:0:0:1';
+  if (!ADMIN_TOKEN && !loopback) {
+    console.error('==========================================================');
+    console.error('  [FATAL] ADMIN_HOST=' + HOST + '（非本机回环）但未配置 ADMIN_TOKEN');
+    console.error('  对外暴露会让任意访问者增删改云数据。请先设置 ADMIN_TOKEN，');
+    console.error('  或将 ADMIN_HOST 改回 127.0.0.1。');
+    console.error('==========================================================');
+    process.exit(1);
+  }
+}
 
 server.listen(PORT, HOST, () => {
   const has = !!(SECRET_ID && SECRET_KEY);
