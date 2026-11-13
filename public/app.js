@@ -600,7 +600,7 @@ function renderStorage() {
   const MAX_RENDER = 800; // 单层文件过多时限制 DOM 量，防止万级文件冻结页面
   const shown = files.slice(0, MAX_RENDER);
   dirs.forEach(d => {
-    const name = d.split('/').pop();
+    const name = d.replace(/\/+$/, '').split('/').filter(Boolean).pop() || '目录';
     const it = document.createElement('div'); it.className = 'fitem dir';
     it.innerHTML = '<div class="thumb">📁</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
     it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
@@ -868,8 +868,10 @@ function bindEvents() {
   // 云存储
   $('#stUp').addEventListener('click', function () {
     if (S.st.prefix.length <= 1) return;
-    const p = S.st.prefix.replace(/[^/]*$/, '');
-    S.st.prefix = p.length > 1 ? p : (p === '/' ? '' : p);
+    // prefix 形如 'a/b/'（结尾必有 /）。先去掉结尾 /，再截掉最后一段，保留的段补回 /
+    const p = S.st.prefix.replace(/\/+$/, '');
+    const i = p.lastIndexOf('/');
+    S.st.prefix = i < 0 ? '' : p.slice(0, i + 1);
     loadStorage();
   });
   $('#stRefresh').addEventListener('click', loadStorage);
