@@ -24,7 +24,7 @@
 | 数据库操作 | `@cloudbase/node-sdk`（与云函数 `wx-server-sdk` 同套 API） |
 | 存储列举 / 临时 URL / 删除 | `@cloudbase/manager-node`（`listDirectoryFiles` / `getTemporaryUrl` / `deleteFile`） |
 | 存储上传 | `@cloudbase/node-sdk`（`uploadFile`） |
-| 前端 | 零依赖原生 JS + 单页 HTML（`public/index.html` + `public/app.js`） |
+| 前端 | 零依赖原生 JS + 单页 HTML（`public/index.html` + `public/styles.css` + `public/js/*.js`，无构建） |
 
 ## 目录结构
 
@@ -33,7 +33,13 @@
 ├── server.js          # 本地管理服务器（全部 API + 静态资源服务）
 ├── public/
 │   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 三个 Tab）
-│   └── app.js         # 前端逻辑（零依赖原生 JS）
+│   ├── styles.css     # 全局样式
+│   └── js/            # 前端逻辑（零依赖原生 JS，无构建）
+│       ├── common.js      # 工具 + 统一 API 请求 + 全局状态
+│       ├── overview.js    # 概览 Tab
+│       ├── db.js          # 云数据库 Tab + 文档模态框
+│       ├── storage.js     # 云存储 Tab
+│       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动
 ├── .env.example       # 配置模板
 ├── .env               # 真实配置（已被 .gitignore 忽略，勿提交）
 └── package.json
