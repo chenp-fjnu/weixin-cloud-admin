@@ -53,6 +53,43 @@ function fmtDate(s) {
   if (isNaN(d.getTime())) return s;
   return d.toLocaleString('zh-CN', { hour12: false });
 }
+// 把「时间语义」字段值（ISO 字符串 / 秒级 / 毫秒级时间戳 / CloudBase {$date} 包装）
+// 统一格式化为可读的本地时间；非时间值返回 null，交由调用方原样渲染。
+// 用「字段名含时间语义」+「值落在当代时间戳范围」双重判断，避免把普通数字/ID 误当时间。
+function isTimeField(name) {
+  return /time|date|stamp|created|updated|modified|_at$|^at$|At$|birthday|birth/i.test(name);
+}
+// 当代时间戳范围：秒级 ~2001~2099，毫秒级同区间。中间灰区不判为时间，降低误伤。
+function tsToNum(v) {
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    if (v >= 1e9 && v < 4.1e9) return v * 1000;      // 秒级 → 毫秒
+    if (v >= 1e12 && v < 4.1e13) return v;            // 毫秒级
+    return null;
+  }
+  return null;
+}
+function fmtTimeValue(col, v) {
+  // ISO 8601 字符串 → 基本可确定是日期，直接格式化
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/.test(s)) {
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return d.toLocaleString('zh-CN', { hour12: false });
+    }
+    return null;
+  }
+  // 数字时间戳：仅当字段名含时间语义时转换，避免误伤普通数字
+  if (typeof v === 'number' && isTimeField(col)) {
+    const ms = tsToNum(v);
+    if (ms != null) { const d = new Date(ms); if (!isNaN(d.getTime())) return d.toLocaleString('zh-CN', { hour12: false }); }
+  }
+  // CloudBase 日期包装对象 {"$date": ...}（SDK 反序列化后通常已是 Date，此为兜底）
+  if (v && typeof v === 'object' && v.$date != null) {
+    const d = new Date(Number(v.$date));
+    if (!isNaN(d.getTime())) return d.toLocaleString('zh-CN', { hour12: false });
+  }
+  return null;
+}
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
@@ -63,7 +100,7 @@ const S = {
   env: '',
   activeTab: 'overview',
   overview: null,
-  db: { collection: '', page: 1, size: 20, total: 0, docs: [], fields: [], cols: [], sort: '', sortDir: 'asc', q: '', field: '' },
+  db: { collection: '', page: 1, size: 20, total: 0, docs: [], fields: [], cols: [], sort: '', sortDir: 'desc', q: '', field: '' },
   st: { prefix: '', files: [], dirs: [], loadedAt: 0 }
 };
 try { S.env = localStorage.getItem(ENV_LS_KEY) || ''; } catch (e) { /* ignore */ }
@@ -137,12 +174,12 @@ async function switchEnv(envId) {
   S.overview = null;
   dbInited = false;
   S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
-  S.db.sort = ''; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
+  S.db.sort = ''; S.db.sortDir = 'desc'; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
   const qEl = $('#dbQuery'), sortEl = $('#dbSort'), fieldEl = $('#dbField'), sortDirEl = $('#dbSortDir');
   if (qEl) qEl.value = '';
   if (sortEl) sortEl.value = '';
   if (fieldEl) fieldEl.value = '';
-  if (sortDirEl) sortDirEl.value = 'asc';
+  if (sortDirEl) sortDirEl.value = 'desc';
   S.st.prefix = ''; S.st.loadedAt = 0; stSel = new Set();
   loadOverview();
   const tab = S.activeTab || 'overview';
@@ -238,14 +275,30 @@ async function loadCollections() {
   }
 }
 
-function openCollection(name) {
-  switchTab('db');
+async function openCollection(name) {
+  // 手动切换 Tab UI（不经过 switchTab，避免其内部 fire-and-forget 的 initDb 与此处产生竞态）
+  S.activeTab = 'db';
+  $$('.tab').forEach(t => {
+    const on = t.dataset.tab === 'db';
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  $$('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-db'));
+
+  // 确保集合列表加载完毕后再设置值（loadCollections 会重建 <select>，必须先等它完成）
+  if (!dbInited) {
+    dbInited = true;
+    await loadCollections();
+  }
+
   const sel = $('#dbCollection');
   if (!Array.from(sel.options).some(o => o.value === name)) {
     const o = document.createElement('option'); o.value = name; o.textContent = name; sel.appendChild(o);
   }
-  sel.value = name; S.db.collection = name; S.db.page = 1;
-  loadDb();
+  sel.value = name;
+  S.db.collection = name;
+  S.db.page = 1;
+  await loadDb();
 }
 
 async function loadDb() {
@@ -259,15 +312,24 @@ async function loadDb() {
   body.innerHTML = '<tr><td colspan="15" class="empty"><span class="spin"></span> 加载中…</td></tr>';
   $('#dbPageInfo').textContent = '加载中…';
   $('#dbCount').textContent = '…';
+  // 排序：用户显式选了字段 → 用所选 + 所选方向；否则（「默认」）→ 自动按时间字段倒序
+  const auto = pickTimeField(S.db.fieldsSet);
+  const sort = S.db.sort || auto || '';
+  const sortDir = S.db.sortDir;
   const p = new URLSearchParams({ name, page: S.db.page, size: S.db.size });
   if (S.db.q && S.db.field) { p.set('field', S.db.field); p.set('q', S.db.q); }
-  if (S.db.sort) { p.set('sort', S.db.sort); p.set('sortDir', S.db.sortDir); }
+  if (sort) { p.set('sort', sort); p.set('sortDir', sortDir); }
   const seq = ++dbSeq;
   try {
     const r = await api('/api/collection?' + p.toString());
     if (seq !== dbSeq) return; // 已有更新的请求，丢弃本次过期响应
     S.db.total = r.total; S.db.docs = r.docs;
     fillDbFields(r.docs);
+    // 首屏：本页已能识别时间字段，而本次请求未带默认排序（auto 尚为空）→ 重查一次以按时间倒序
+    const nowAuto = pickTimeField(S.db.fieldsSet);
+    if (!S.db.sort && nowAuto && auto !== nowAuto) { loadDb(); return; }
+    // 方向下拉反映本次生效的排序方向；默认（自动）模式下置灰，仅手动选字段后可切换
+    const dirEl = $('#dbSortDir'); if (dirEl) { dirEl.value = sortDir; dirEl.disabled = !S.db.sort; }
     renderDbTable();
   } catch (e) {
     if (seq !== dbSeq) return;
@@ -275,34 +337,54 @@ async function loadDb() {
   }
 }
 
-// 字段并集跨页累积（S.db.fieldsSet），让「筛选字段」「排序字段」下拉不因翻页丢项
+// 字段并集跨页累积（S.db.fieldsSet），让「筛选字段」「排序字段」下拉不因翻页丢项。
+// 系统/内部字段（_id、_openid 等）不进入下拉，也不进表格列。
 function fillDbFields(docs) {
   const f = $('#dbField'), sortSel = $('#dbSort');
-  if (!S.db.fieldsSet) S.db.fieldsSet = new Set(['_id']);
-  docs.forEach(d => Object.keys(d).forEach(k => S.db.fieldsSet.add(k)));
+  if (!S.db.fieldsSet) S.db.fieldsSet = new Set();
+  docs.forEach(d => Object.keys(d).forEach(k => { if (!isSystemField(k)) S.db.fieldsSet.add(k); }));
   const fields = Array.from(S.db.fieldsSet);
-  const prevField = f.value, prevSort = sortSel.value;
+  const prevField = f.value;
   f.innerHTML = '<option value="">（全字段）</option>';
-  sortSel.innerHTML = '<option value="">默认</option>';
+  sortSel.innerHTML = '<option value="">默认（时间倒序）</option>';
   fields.forEach(k => {
     const o1 = document.createElement('option'); o1.value = k; o1.textContent = k; f.appendChild(o1);
     const o2 = document.createElement('option'); o2.value = k; o2.textContent = k; sortSel.appendChild(o2);
   });
   if (prevField && S.db.fieldsSet.has(prevField)) f.value = prevField;
-  if (prevSort && S.db.fieldsSet.has(prevSort)) sortSel.value = prevSort;
+  // 排序下拉：保留用户显式选择；未显式选（值为空）时回落到「默认」
+  if (S.db.sort && S.db.fieldsSet.has(S.db.sort)) sortSel.value = S.db.sort;
+  else sortSel.value = '';
 }
 
-// 按当前页文档字段并集动态生成列（_id 恒首列，其余按首次出现顺序）
+// 系统/内部字段：以下划线开头（_id、_openid 等），列表不展示、不进筛选/排序下拉
+function isSystemField(k) { return typeof k === 'string' && k.indexOf('_') === 0; }
+// 从字段并集里挑出最可能的「时间」字段，用于默认排序；找不到返回 ''
+// 入参兼容数组与 Set（S.db.fieldsSet 运行时是 Set，Set 无 indexOf，须先归一化）
+function pickTimeField(fields) {
+  const keys = Array.isArray(fields) ? fields : (fields && fields instanceof Set ? Array.from(fields) : []);
+  const pref = ['createdAt', 'createTime', 'created_at', 'create_time', 'updatedAt', 'updateTime',
+    'updated_at', 'update_time', 'time', 'timestamp', 'date', 'publishTime', 'publishAt', 'created'];
+  for (let i = 0; i < pref.length; i++) if (keys.indexOf(pref[i]) >= 0) return pref[i];
+  for (let i = 0; i < keys.length; i++) if (!isSystemField(keys[i]) && isTimeField(keys[i])) return keys[i];
+  return '';
+}
+
+// 表格列：排除系统字段，按当前页首次出现顺序动态生成
 function fieldColumns(docs) {
-  const cols = ['_id'];
-  const seen = new Set(cols);
+  const cols = [];
+  const seen = new Set();
   docs.forEach(d => Object.keys(d).forEach(k => {
+    if (isSystemField(k)) return;
     if (!seen.has(k)) { seen.add(k); cols.push(k); }
   }));
   return cols;
 }
-function cellText(v) {
+function cellText(col, v) {
   if (v === null || v === undefined) return '';
+  // 时间值优先格式化为可读时间（ISO 字符串 / 时间语义字段的秒级 / 毫秒级时间戳）
+  const time = fmtTimeValue(col, v);
+  if (time) return time;
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
   try { return JSON.stringify(v); } catch (e) { return String(v); }
 }
@@ -319,10 +401,8 @@ function pillFor(field, value) {
 
 function renderDbTable() {
   S.db.cols = fieldColumns(S.db.docs);
-  // 动态表头：_id + 各字段 + 操作
-  $('#dbHead').innerHTML = '<th>_id</th>'
-    + S.db.cols.filter(c => c !== '_id').map(c => '<th>' + esc(c) + '</th>').join('')
-    + '<th>操作</th>';
+  // 动态表头：业务字段（已剔除 _id 等系统字段）+ 操作
+  $('#dbHead').innerHTML = S.db.cols.map(c => '<th>' + esc(c) + '</th>').join('') + '<th>操作</th>';
   const body = $('#dbBody'); body.innerHTML = '';
   if (!S.db.docs.length) {
     body.innerHTML = '<tr><td colspan="' + (S.db.cols.length + 1) + '" class="empty">（空集合或无匹配）</td></tr>';
@@ -335,7 +415,6 @@ function renderDbTable() {
       const td = document.createElement('td');
       const pill = pillFor(col, d[col]);
       if (pill) { td.innerHTML = pill; }
-      else if (col === '_id') { td.className = 'id'; td.textContent = d[col]; td.title = d[col]; }
       else if (typeof d[col] === 'string' && /^cloud:\/\//.test(d[col]) && isImage(d[col])) {
         // cloud:// 图片（如 imageId）→ 缩略图，本页图片统一批量取临时链接后填充
         td.title = d[col];
@@ -345,7 +424,7 @@ function renderDbTable() {
         imgRels.push(rel);
       }
       else {
-        const t = cellText(d[col]);
+        const t = cellText(col, d[col]);
         td.className = 'val'; td.textContent = t;
         if (t) td.title = t; else td.innerHTML = '<span class="muted">—</span>';
       }
@@ -744,8 +823,8 @@ function bindEvents() {
   // 数据库
   $('#dbCollection').addEventListener('change', function () {
     S.db.collection = this.value; S.db.page = 1;
-    S.db.fieldsSet = null; S.db.q = ''; S.db.field = ''; S.db.sort = '';
-    $('#dbQuery').value = ''; $('#dbSort').value = '';
+    S.db.fieldsSet = null; S.db.q = ''; S.db.field = ''; S.db.sort = ''; S.db.sortDir = 'desc';
+    $('#dbQuery').value = ''; $('#dbSort').value = ''; $('#dbSortDir').value = 'desc';
     loadDb();
   });
   $('#dbSize').addEventListener('change', function () {
