@@ -1,8 +1,8 @@
 {
-  "name": "wuxing-wardrobe-admin",
+  "name": "weixin-cloud-admin",
   "version": "1.0.0",
   "private": true,
-  "description": "云端数据管理台（本地运行，连接云开发环境的全部数据库集合与云存储文件；支持多环境顶栏切换，默认 cloud-ai-fortune-d3eifhh01c8b796）",
+  "description": "云端数据管理台（本地运行，连接云开发环境的全部数据库集合与云存储文件；支持多环境顶栏切换）",
   "scripts": {
     "start": "node server.js"
   },

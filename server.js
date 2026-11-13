@@ -17,8 +17,8 @@
  *   - 腾讯云密钥（secretId/secretKey）只存在于本进程环境变量，永不下发到浏览器。
  *   - 浏览器 ↔ 本服务走同源 http，本服务再代去 CloudBase，前端零凭证。
  *
- * 凭证来源（优先级：process.env > admin/.env 文件）：
- *   TCB_ENV_ID     默认云环境 ID（默认 cloud-ai-fortune-d3eifhh01c8b796）
+ * 凭证来源（优先级：process.env > .env 文件）：
+ *   TCB_ENV_ID     默认云环境 ID（必填，云开发控制台获取）
  *   TCB_ENV_IDS    可选；逗号分隔的可切换环境列表（默认=仅 TCB_ENV_ID）
  *   TCB_SECRET_ID  腾讯云 SecretId（须能访问列表中所有云环境；不同环境若分属不同账号需自行保证）
  *   TCB_SECRET_KEY 腾讯云 SecretKey
@@ -55,7 +55,11 @@ loadDotEnv();
 
 // ============ 多环境注册表 ============
 // 默认环境 = TCB_ENV_ID（保持旧配置兼容）；TCB_ENV_IDS 提供可切换的完整列表。
-const DEFAULT_ENV_ID = process.env.TCB_ENV_ID || 'cloud-ai-fortune-d3eifhh01c8b796';
+const DEFAULT_ENV_ID = (process.env.TCB_ENV_ID || '').trim();
+if (!DEFAULT_ENV_ID) {
+  console.error('启动失败：未配置 TCB_ENV_ID（默认云环境 ID 必填，参见 .env.example）');
+  process.exit(1);
+}
 const ENV_LIST = (process.env.TCB_ENV_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
 if (!ENV_LIST.length || !ENV_LIST.includes(DEFAULT_ENV_ID)) ENV_LIST.unshift(DEFAULT_ENV_ID);
 const SECRET_ID = process.env.TCB_SECRET_ID || '';
@@ -81,16 +85,11 @@ function hasSecrets(envId) {
   return !!(s.id && s.key);
 }
 
-// 本小程序使用的 wardrobe 前缀集合（listCollections 接口失败时的兜底名单）
-const KNOWN_COLLECTIONS = [
-  'wardrobe_items',
-  'wardrobe_user_profiles',
-  'wardrobe_app_config',
-  'wardrobe_circles',
-  'wardrobe_circle_items',
-  'wardrobe_circle_outfits',
-  'wardrobe_reports'
-];
+// 兜底集合名单（listCollections 接口失败时使用）；可用 KNOWN_COLLECTIONS 环境变量覆盖（逗号分隔）
+const KNOWN_COLLECTIONS = (process.env.KNOWN_COLLECTIONS ||
+  'wardrobe_items,wardrobe_user_profiles,wardrobe_app_config,wardrobe_circles,' +
+  'wardrobe_circle_items,wardrobe_circle_outfits,wardrobe_reports'
+).split(',').map(s => s.trim()).filter(Boolean);
 
 // ============ 客户端（惰性构造，按 envId 缓存） ============
 const _clients = new Map(); // envId -> { tcb, manager }
@@ -100,15 +99,15 @@ function assertSecrets(envId) {
   if (!s.id || !s.key) {
     const idx = ENV_LIST.indexOf(envId);
     const hint = idx > 0
-      ? '环境 ' + envId + ' 未配置独立凭证（admin/.env 填 TCB_SECRET_ID_' + (idx + 1) + ' / TCB_SECRET_KEY_' + (idx + 1) + '），且默认 TCB_SECRET_ID / TCB_SECRET_KEY 也缺失'
-      : '未配置腾讯云凭证：请在 admin/.env 填入 TCB_SECRET_ID 与 TCB_SECRET_KEY 后重启服务';
+      ? '环境 ' + envId + ' 未配置独立凭证（.env 填 TCB_SECRET_ID_' + (idx + 1) + ' / TCB_SECRET_KEY_' + (idx + 1) + '），且默认 TCB_SECRET_ID / TCB_SECRET_KEY 也缺失'
+      : '未配置腾讯云凭证：请在 .env 填入 TCB_SECRET_ID 与 TCB_SECRET_KEY 后重启服务';
     throw new AppError(hint, 'NO_SECRETS');
   }
   return s;
 }
 function requireSdk(mod) {
   try { return require(mod); }
-  catch (e) { throw new AppError('未安装 ' + mod + '，请先在 admin/ 目录执行 npm install', 'SDK_MISSING'); }
+  catch (e) { throw new AppError('未安装 ' + mod + '，请先在本目录执行 npm install', 'SDK_MISSING'); }
 }
 function getClient(envId) {
   const s = assertSecrets(envId);
@@ -210,7 +209,7 @@ async function storageWalk(prefix, maxFiles, envId) {
   return out.slice(0, cap);
 }
 
-// 临时 URL / 删除：listDirectoryFiles 返回的 Key 是相对 cloudPath（如 wardrobe/{openid}/x.jpg），
+// 临时 URL / 删除：listDirectoryFiles 返回的 Key 是相对 cloudPath（如 avatar/{openid}/x.jpg），
 // manager-node 的 getTemporaryUrl/deleteFile 同样以相对 cloudPath 为参数，直接复用，免 fileID 形态换算。
 async function storageTempUrls(cloudPaths, envId) {
   const m = getManager(envId);
@@ -532,6 +531,6 @@ server.listen(PORT, HOST, () => {
   console.log('  云端数据管理台（多环境）');
   console.log('  本地访问: http://' + HOST + ':' + PORT + '/');
   console.log('  云环境 : ' + ENV_LIST.join('  |  ') + '（默认 ' + DEFAULT_ENV_ID + '）');
-  console.log('  凭证   : ' + (has ? '已配置' : '未配置（请在 admin/.env 填入 TCB_SECRET_ID / TCB_SECRET_KEY）'));
+  console.log('  凭证   : ' + (has ? '已配置' : '未配置（请在 .env 填入 TCB_SECRET_ID / TCB_SECRET_KEY）'));
   console.log('==========================================================');
 });

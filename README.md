@@ -1,12 +1,12 @@
-# 别乱穿 · 云端数据管理台
+# 云端数据管理台
 
-一个跑在**本地**的 Web 管理台，用于「查看 + 管理」一个或多个腾讯云 CloudBase（云开发）环境内的全部资源：
+一个跑在**本地**的独立 Web 管理台，用于「查看 + 管理」一个或多个腾讯云 CloudBase（云开发）环境内的全部资源：
 
 - **云数据库**：所有集合的文档（浏览 / 搜索 / 排序 / 新增 / 编辑 / 删除）
 - **云存储**：根目录下的全部文件（目录浏览 / 图片预览 / 上传 / 删除 / 临时链接）
-- **多环境切换**：顶栏下拉框切换不同云环境，默认环境为 `TCB_ENV_ID`（当前默认 `cloud-ai-fortune-d3eifhh01c8b796`）
+- **多环境切换**：顶栏下拉框切换不同云环境，默认环境由 `TCB_ENV_ID` 指定
 
-> 配套小程序「别乱穿」（wuxing-wardrobe），用于日常运维该小程序的数据库与用户上传的云存储文件。
+> 这是一个与具体业务应用无关的通用运维工具：只要持有目标云环境的腾讯云 API 凭证，即可管理该环境内的数据库与云存储。
 
 ## 功能一览
 
@@ -53,16 +53,18 @@ npm install
 cp .env.example .env
 ```
 
-编辑 `.env`，填入腾讯云 API 凭证（须为能访问目标云环境的账号）：
+编辑 `.env`，填入你的云环境 ID 与腾讯云 API 凭证（须为能访问目标云环境的账号）：
 
 ```ini
-TCB_ENV_ID=cloud-ai-fortune-d3eifhh01c8b796
+TCB_ENV_ID=<你的云环境 ID>
 TCB_SECRET_ID=你的 SecretId
 TCB_SECRET_KEY=你的 SecretKey
 ```
 
-> 腾讯云 SecretId / SecretKey 在 [腾讯云控制台 → API 密钥管理](https://console.cloud.tencent.com/api/v3/secret-key) 获取。
-> 注意：`.env` 已被 `.gitignore` 忽略，**切勿提交真实密钥**。
+> - 云环境 ID 在 [云开发控制台](https://console.cloud.tencent.com/tcb) 获取
+> - SecretId / SecretKey 在 [腾讯云控制台 → API 密钥管理](https://console.cloud.tencent.com/api/v3/secret-key) 获取
+> - `TCB_ENV_ID` 为必填项，未配置时服务启动会直接报错退出
+> - `.env` 已被 `.gitignore` 忽略，**切勿提交真实密钥**
 
 ### 3. 启动
 
@@ -78,7 +80,7 @@ npm start
 ==========================================================
   云端数据管理台（多环境）
   本地访问: http://127.0.0.1:8787/
-  云环境 : cloud-ai-fortune-d3eifhh01c8b796（默认 cloud-ai-fortune-d3eifhh01c8b796）
+  云环境 : <你的环境 ID>（默认 <你的环境 ID>）
   凭证   : 已配置
 ==========================================================
 ```
@@ -87,11 +89,12 @@ npm start
 
 | 变量 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `TCB_ENV_ID` | 否 | `cloud-ai-fortune-d3eifhh01c8b796` | 默认云环境 ID |
+| `TCB_ENV_ID` | **是** | — | 默认云环境 ID |
 | `TCB_ENV_IDS` | 否 | 仅含 `TCB_ENV_ID` | 可切换环境列表（逗号分隔），前端顶栏下拉切换 |
 | `TCB_SECRET_ID` | **是** | — | 腾讯云 SecretId（第 1 个环境） |
 | `TCB_SECRET_KEY` | **是** | — | 腾讯云 SecretKey（第 1 个环境） |
-| `TCB_SECRET_ID_2` / `TCB_SECRET_KEY_2` | 否 | 回落默认凭证 | 第 2 个环境的独立凭证（跨账号场景，序号与 `TCB_ENV_IDS` 位置对应） |
+| `TCB_SECRET_ID_N` / `TCB_SECRET_KEY_N` | 否 | 回落默认凭证 | 第 N 个环境的独立凭证（跨账号场景，N 为 `TCB_ENV_IDS` 中的位置序号，如第 2 个环境用 `_2`） |
+| `KNOWN_COLLECTIONS` | 否 | 内置示例名单 | 兜底集合名单（逗号分隔），仅在 `listCollections` 接口失败时生效 |
 | `ADMIN_PORT` | 否 | `8787` | 服务端口 |
 | `ADMIN_HOST` | 否 | `127.0.0.1` | 绑定地址，**务必保持本机回环，不对外暴露** |
 | `ADMIN_TOKEN` | 否 | — | 设置后所有 `/api` 请求须携带请求头 `x-admin-token: <值>` |
@@ -100,11 +103,11 @@ npm start
 **多环境示例**（两个环境分属不同账号）：
 
 ```ini
-TCB_ENV_IDS=cloud-ai-fortune-d3eifhh01c8b796,cloud1-d3gnb20je2d34acb4
-TCB_SECRET_ID=
-TCB_SECRET_KEY=
-TCB_SECRET_ID_2=
-TCB_SECRET_KEY_2=
+TCB_ENV_IDS=<环境A>,<环境B>
+TCB_SECRET_ID=<环境A账号 SecretId>
+TCB_SECRET_KEY=<环境A账号 SecretKey>
+TCB_SECRET_ID_2=<环境B账号 SecretId>
+TCB_SECRET_KEY_2=<环境B账号 SecretKey>
 ```
 
 ## API 一览
@@ -136,11 +139,14 @@ TCB_SECRET_KEY_2=
 
 ## 常见问题
 
+**Q: 服务启动即退出，提示「未配置 TCB_ENV_ID」？**
+在 `.env` 填入默认云环境 ID 后重启。
+
 **Q: 页面显示「未配置凭证」？**
 在 `.env` 填入 `TCB_SECRET_ID` / `TCB_SECRET_KEY` 后重启服务。
 
-**Q: 集合列表只看到 `wardrobe_*` 固定 7 个集合？**
-`listCollections` 接口调用失败时的兜底名单。检查凭证账号是否有权限访问目标环境。
+**Q: 集合列表只看到几个内置示例集合？**
+这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请检查凭证账号是否有权限访问目标环境，或在 `.env` 中用 `KNOWN_COLLECTIONS` 配置你自己的集合名单。
 
 **Q: 图片预览失效？**
 临时 URL 有效期 2 小时，刷新页面重新获取即可。

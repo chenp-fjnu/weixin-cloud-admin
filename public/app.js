@@ -123,6 +123,12 @@ async function switchEnv(envId) {
   S.overview = null;
   dbInited = false;
   S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
+  S.db.sort = ''; S.db.q = ''; S.db.field = '';
+  const qEl = $('#dbQuery'), sortEl = $('#dbSort'), fieldEl = $('#dbField'), sortDirEl = $('#dbSortDir');
+  if (qEl) qEl.value = '';
+  if (sortEl) sortEl.value = '';
+  if (fieldEl) fieldEl.value = '';
+  if (sortDirEl) sortDirEl.value = 'asc';
   S.st.prefix = ''; stSel = new Set();
   loadOverview();
   const tab = S.activeTab || 'overview';
@@ -132,12 +138,8 @@ async function switchEnv(envId) {
 }
 
 // ---------- 概览 ----------
-// 本小程序 wardrobe_* 集合的中文标签（仅用于概览卡片展示，其余集合直接显示原始集合名）
-const COL_LABEL = {
-  wardrobe_items: '个人衣物', wardrobe_user_profiles: '生辰资料', wardrobe_app_config: '应用配置',
-  wardrobe_circles: '圈子', wardrobe_circle_items: '圈池条目',
-  wardrobe_circle_outfits: '圈子搭配', wardrobe_reports: '举报台账'
-};
+// 可选：集合中文标签（key = 集合名，value = 显示名）；未配置的集合直接显示原始集合名
+const COL_LABEL = {};
 
 async function loadOverview() {
   const banner = $('#ovBanner');
@@ -188,11 +190,11 @@ async function loadOverview() {
 
 // ---------- 数据库 ----------
 // 全环境集合名单的主源是服务端 /api/collections（listCollections）；
-// KNOWN_COLS 仅作接口失败时的兜底。
-const KNOWN_COLS = ['wardrobe_items', 'wardrobe_user_profiles', 'wardrobe_app_config',
-  'wardrobe_circles', 'wardrobe_circle_items', 'wardrobe_circle_outfits', 'wardrobe_reports'];
+// KNOWN_COLS 仅作接口失败时的兜底，留空即可（服务端自身已有兜底名单）。
+const KNOWN_COLS = [];
 
 let dbInited = false;
+let dbSeq = 0; // 请求序号：快速翻页/切环境时丢弃过期响应，避免旧数据覆盖新数据
 async function initDb() {
   const sel = $('#dbCollection');
   if (!dbInited) {
@@ -233,12 +235,15 @@ async function loadDb() {
   const p = new URLSearchParams({ name, page: S.db.page, size: S.db.size });
   if (S.db.q && S.db.field) { p.set('field', S.db.field); p.set('q', S.db.q); }
   if (S.db.sort) { p.set('sort', S.db.sort); p.set('sortDir', S.db.sortDir); }
+  const seq = ++dbSeq;
   try {
     const r = await api('/api/collection?' + p.toString());
+    if (seq !== dbSeq) return; // 已有更新的请求，丢弃本次过期响应
     S.db.total = r.total; S.db.docs = r.docs;
     fillDbFields(r.docs);
     renderDbTable();
   } catch (e) {
+    if (seq !== dbSeq) return;
     body.innerHTML = '<tr><td colspan="4" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
   }
 }
@@ -397,6 +402,7 @@ function hideModal(id) { $('#' + id).classList.remove('show'); }
 
 // ---------- 云存储 ----------
 let stSel = new Set();
+let stUrlSeq = 0; // 缩略图批量 URL 请求序号：目录切换后丢弃过期结果
 function isImage(name) { return /\.(jpe?g|png|webp|gif|bmp|svg)$/i.test(name); }
 
 async function loadStorage() {
@@ -462,7 +468,7 @@ function renderStorage() {
     const it = document.createElement('div'); it.className = 'fitem';
     it.dataset.path = f.name;
     const thumb = document.createElement('div'); thumb.className = 'thumb';
-    if (isImage(f.name)) { thumb.innerHTML = '<span class="spin"></span>'; resolveUrl(f.name).then(url => { if (url) thumb.innerHTML = '<img src="' + url + '" alt="" onerror="this.parentNode.style.display=\'none\'">'; }); }
+    if (isImage(f.name)) { thumb.innerHTML = '<span class="spin"></span>'; }
     else thumb.textContent = '📄';
     const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = base;
     const meta = document.createElement('div'); meta.className = 'meta';
@@ -476,6 +482,17 @@ function renderStorage() {
     if (stSel.has(f.name)) it.classList.add('sel');
     grid.appendChild(it);
   });
+  // 本页所有图片一次性批量取临时 URL（旧实现每图一个请求，20 图 = 20 次往返）
+  if (files.some(f => isImage(f.name))) {
+    let seq = ++stUrlSeq;
+    resolveUrls(files.filter(f => isImage(f.name)).map(f => f.name)).then(map => {
+      if (seq !== stUrlSeq) return; // 目录已切换，丢弃过期结果
+      $$('#stGrid .fitem').forEach(it => {
+        const url = map[it.dataset.path];
+        if (url) it.querySelector('.thumb').innerHTML = '<img src="' + url + '" alt="" onerror="this.parentNode.style.display=\'none\'">';
+      });
+    });
+  }
   updateSelCount();
 }
 
@@ -494,6 +511,25 @@ async function resolveUrl(cloudPath) {
     const r = await api('/api/storage/urls?' + new URLSearchParams({ fileIDs: cloudPath }));
     return (r.urls && r.urls[cloudPath]) || '';
   } catch (e) { return ''; }
+}
+// 批量取临时链接：按 50 一批并发请求，进程内缓存（临时链接 2h 有效），返回 { cloudPath: url }
+const _urlCache = new Map();
+function resolveUrls(cloudPaths) {
+  const need = cloudPaths.filter(p => !_urlCache.get(p));
+  const chunks = [];
+  for (let i = 0; i < need.length; i += 50) chunks.push(need.slice(i, i + 50));
+  return Promise.all(chunks.map(chunk => {
+    if (!chunk.length) return Promise.resolve({});
+    const p = new URLSearchParams({ fileIDs: chunk.join(',') });
+    return api('/api/storage/urls?' + p.toString()).then(r => r.urls || {}).catch(() => ({}));
+  })).then(results => {
+    const fresh = {};
+    results.forEach(m => Object.assign(fresh, m));
+    Object.entries(fresh).forEach(([k, v]) => { if (v) _urlCache.set(k, v); });
+    const map = {};
+    cloudPaths.forEach(p => { const u = _urlCache.get(p); if (u) map[p] = u; });
+    return map;
+  });
 }
 
 async function previewFile(f) {
@@ -550,12 +586,23 @@ async function scanDirs() {
 async function deleteSelected() {
   const arr = Array.from(stSel);
   if (!arr.length) return;
-  if (!confirm('确认删除所选 ' + arr.length + ' 个云文件？\n\n' + arr.map(x => '· ' + x.split('/').pop()).join('\n') + '\n\n此操作不可撤销。')) return;
+  const preview = arr.slice(0, 20).map(x => '· ' + x.split('/').pop()).join('\n') + (arr.length > 20 ? '\n… 等 ' + arr.length + ' 个' : '');
+  if (!confirm('确认删除所选 ' + arr.length + ' 个云文件？\n\n' + preview + '\n\n此操作不可撤销。')) return;
+  const btn = $('#stDelete'); btn.disabled = true; btn.textContent = '删除中…';
+  let ok = 0;
   try {
-    await api('/api/storage/delete', { method: 'POST', body: { fileIDs: arr } });
-    toast('已删除 ' + arr.length + ' 个文件', 'ok');
+    // 每批 50 个串行删除，汇总真实删除数（旧实现后端静默截断 50 个但前端报全量，数据不一致）
+    for (let i = 0; i < arr.length; i += 50) {
+      const r = await api('/api/storage/delete', { method: 'POST', body: { fileIDs: arr.slice(i, i + 50) } });
+      ok += (r && r.deleted) || 0;
+    }
+    toast('已删除 ' + ok + ' 个文件', 'ok');
     loadStorage();
-  } catch (e) { toast('删除失败：' + e.message, 'err'); }
+  } catch (e) {
+    toast('删除失败：' + e.message + (ok ? '（已成功 ' + ok + ' 个）' : ''), 'err');
+  } finally {
+    btn.innerHTML = '删除所选 (<span id="stSelCount">0</span>)'; updateSelCount();
+  }
 }
 
 async function uploadToCurrent() {
@@ -587,7 +634,9 @@ function bindEvents() {
   });
   $('#dbRefresh').addEventListener('click', loadDb);
   $('#dbSearch').addEventListener('click', function () {
-    S.db.field = $('#dbField').value; S.db.q = $('#dbQuery').value.trim(); S.db.page = 1;
+    const q = $('#dbQuery').value.trim();
+    if (q.length > 200) return toast('搜索表达式过长（≤200 字符）', 'err');
+    S.db.field = $('#dbField').value; S.db.q = q; S.db.page = 1;
     loadDb();
   });
   $('#dbQuery').addEventListener('keydown', function (e) {
