@@ -27,6 +27,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/>',
   moon: '<path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>',
   chevR: '<path d="M9 6l6 6-6 6"/>',
+  list: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4.2 6h.01M4.2 12h.01M4.2 18h.01"/>',
   file: '<path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3z"/><path d="M13.5 3v5.5H19"/>',
   fileText: '<path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3z"/><path d="M13.5 3v5.5H19"/><path d="M9 13h6M9 16.5h4"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="M21 15.5 16 10.5 5.5 18"/>',
@@ -178,6 +179,18 @@ const S = {
   st: { prefix: '', files: [], dirs: [], loadedAt: 0, filter: '', sort: 'name' }
 };
 try { S.env = localStorage.getItem(ENV_LS_KEY) || ''; } catch (e) { /* ignore */ }
+
+// ---------- 复制文本（clipboard API 优先，降级 execCommand） ----------
+function copyText(t) {
+  if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(t);
+  return new Promise((res, rej) => {
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand('copy') ? res() : rej(new Error('copy')); }
+    catch (e) { rej(e); } finally { ta.remove(); }
+  });
+}
 
 // ---------- 模态框通用 ----------
 function showModal(id) { $('#' + id).classList.add('show'); }

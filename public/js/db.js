@@ -61,9 +61,9 @@ async function loadDb() {
     $('#dbBody').innerHTML = '<tr><td colspan="15" class="empty">请先选择集合</td></tr>';
     return;
   }
-  // colspan 大于实际列数时浏览器会并入剩余列，不会错位
+  // 加载骨架屏：按上一轮列数（无则 6 列）生成微光占位行，避免空白跳变
   const body = $('#dbBody');
-  body.innerHTML = '<tr><td colspan="15" class="empty"><span class="spin"></span> 加载中…</td></tr>';
+  body.innerHTML = dbSkeletonRows();
   $('#dbPageInfo').textContent = '加载中…';
   $('#dbCount').textContent = '加载中…';
   // 排序：用户显式选了字段 → 用所选 + 所选方向；否则（「默认」）→ 自动按时间字段倒序
@@ -89,6 +89,66 @@ async function loadDb() {
     if (seq !== dbSeq) return;
     body.innerHTML = '<tr><td colspan="15" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
   }
+}
+
+// 加载骨架行：列宽伪随机，避免整齐划一；列数跟随上一轮实际列数（上限 8 列防过宽）
+function dbSkeletonRows() {
+  const nCols = Math.max(3, Math.min(8, (S.db.cols && S.db.cols.length) || 6));
+  let rows = '';
+  for (let r = 0; r < 6; r++) {
+    let tds = '<td class="id"><span class="skl" style="height:11px;width:72%"></span></td>';
+    for (let c = 1; c < nCols; c++) {
+      const w = 38 + ((r * 17 + c * 29) % 58);
+      tds += '<td class="val"><span class="skl" style="height:11px;width:' + w + '%"></span></td>';
+    }
+    tds += '<td class="opcell"><span class="skl" style="height:11px;width:104px"></span></td>';
+    rows += '<tr class="skltr">' + tds + '</tr>';
+  }
+  return rows;
+}
+
+// 点击列头排序：同列再次点击切换方向，其余情况按该列降序；回到第 1 页并同步排序下拉
+function sortByCol(col) {
+  if (S.db.sort === col) S.db.sortDir = S.db.sortDir === 'asc' ? 'desc' : 'asc';
+  else { S.db.sort = col; S.db.sortDir = 'desc'; }
+  S.db.page = 1;
+  const sortSel = $('#dbSort');
+  if (sortSel) sortSel.value = col; // 选项由 fillDbFields 在响应后按 fieldsSet 重建并回填
+  const dirEl = $('#dbSortDir');
+  if (dirEl) dirEl.value = S.db.sortDir;
+  loadDb();
+}
+
+// 筛选 / 排序状态 chip：当前生效的筛选与显式排序一目了然，× 可一键清除单项
+function renderDbChips() {
+  const box = $('#dbChips');
+  if (!box) return;
+  box.innerHTML = '';
+  const mk = (text, onX) => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    const t = document.createElement('span'); t.className = 'ct'; t.textContent = text;
+    const x = document.createElement('button'); x.className = 'cx'; x.textContent = '×'; x.title = '清除';
+    x.addEventListener('click', () => onX());
+    c.append(t, x);
+    box.appendChild(c);
+  };
+  if (S.db.q && S.db.field) {
+    mk('筛选 · ' + S.db.field + ' 匹配 ' + S.db.q, () => {
+      S.db.q = ''; S.db.field = ''; S.db.page = 1;
+      $('#dbQuery').value = ''; $('#dbField').value = '';
+      loadDb();
+    });
+  }
+  if (S.db.sort) {
+    mk('排序 · ' + S.db.sort + '（' + (S.db.sortDir === 'asc' ? '升序' : '降序') + '）', () => {
+      S.db.sort = ''; S.db.sortDir = 'desc';
+      const sel = $('#dbSort'); if (sel) sel.value = '';
+      const dirEl = $('#dbSortDir'); if (dirEl) dirEl.value = 'desc';
+      loadDb();
+    });
+  }
+  box.style.display = box.children.length ? 'flex' : 'none';
 }
 
 // 字段并集跨页累积（S.db.fieldsSet），让「筛选字段」「排序字段」下拉不因翻页丢项。
@@ -156,10 +216,20 @@ function pillFor(field, value) {
 function renderDbTable() {
   S.db.cols = fieldColumns(S.db.docs);
   const totalCols = S.db.cols.length + 2; // _id 列 + 操作列
+  renderDbChips();
   // 页头副标题：文档总数
   $('#dbCount').textContent = S.db.docs.length ? ('共 ' + fmtNum(S.db.total) + ' 条文档 · 当前集合 ' + S.db.collection) : ('集合 ' + S.db.collection + ' 无文档');
   // 动态表头：_id + 业务字段（已剔除 _openid 等其余系统字段）+ 操作
-  $('#dbHead').innerHTML = '<th class="id">_id</th>' + S.db.cols.map(c => '<th>' + esc(c) + '</th>').join('') + '<th class="opcell">操作</th>';
+  // 列头可点击排序：当前排序列高亮并显示方向箭头（▲ 升序 / ▼ 降序）
+  const effSort = S.db.sort || pickTimeField(S.db.fieldsSet) || '';
+  const effDir = S.db.sortDir;
+  $('#dbHead').innerHTML = '<th class="id">_id</th>' + S.db.cols.map(c => {
+    const on = effSort === c;
+    const arrow = on ? (effDir === 'asc' ? '▲' : '▼') : ''; // ▲ 升序 / ▼ 降序
+    return '<th class="sortable' + (on ? ' on' : '') + '" data-col="' + esc(c) + '" title="点击按 ' + esc(c) + ' 排序">' +
+      esc(c) + '<span class="sar">' + arrow + '</span></th>';
+  }).join('') + '<th class="opcell">操作</th>';
+  $$('#dbHead th.sortable').forEach(th => th.addEventListener('click', () => sortByCol(th.dataset.col)));
   const body = $('#dbBody'); body.innerHTML = '';
   if (!S.db.docs.length) {
     body.innerHTML = '<tr><td colspan="' + totalCols + '" class="empty">（空集合或无匹配）</td></tr>';
@@ -170,11 +240,18 @@ function renderDbTable() {
   const imgRels = [];
   S.db.docs.forEach(d => {
     const tr = document.createElement('tr');
-    // _id 列（只读）
+    // _id 列（只读，点击一键复制）
     const idTd = document.createElement('td');
     idTd.className = 'id';
     idTd.textContent = d._id;
-    idTd.title = d._id;
+    idTd.title = '点击复制 _id';
+    idTd.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyText(d._id).then(
+        () => toast('已复制 _id', 'ok'),
+        () => toast('复制失败', 'err')
+      );
+    });
     tr.appendChild(idTd);
     S.db.cols.forEach(col => {
       const td = document.createElement('td');
@@ -234,6 +311,7 @@ function renderDbTable() {
 function updatePager(pages) {
   $('#dbPrev').disabled = S.db.page <= 1;
   $('#dbNext').disabled = pages ? S.db.page >= pages : true;
+  const go = $('#dbPageGo'); if (go) go.max = pages; // 页码跳转输入框的范围提示
 }
 let _imgTok = 0; // 表格重渲染令牌：丢弃上一批未完成的图片 URL 填充
 

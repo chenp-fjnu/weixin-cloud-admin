@@ -5,7 +5,18 @@
 
 let stSel = new Set();
 let stUrlSeq = 0; // 缩略图批量 URL 请求序号：目录切换后丢弃过期结果
+const ST_VIEW_KEY = 'wxw-admin-stview'; // 显示方式：grid / list
+let stView = 'grid';
 function isImage(name) { return /\.(jpe?g|png|webp|gif|bmp|svg)$/i.test(name); }
+// 切换显示方式并持久化；list 视图下 #stGrid 加 .list 类走行样式
+function setStView(v) {
+  stView = v;
+  try { localStorage.setItem(ST_VIEW_KEY, v); } catch (e) { /* ignore */ }
+  $('#stGrid').classList.toggle('list', v === 'list');
+  const g = $('#stViewGrid'), l = $('#stViewList');
+  if (g) g.classList.toggle('on', v === 'grid');
+  if (l) l.classList.toggle('on', v === 'list');
+}
 
 // 文件类型 → 图标名
 function fileIcon(name) {
@@ -35,6 +46,7 @@ async function loadStorage() {
   const loading = $('#stLoading'), body = $('#stBody');
   loading.style.display = ''; body.style.display = 'none';
   $('#stScanPanel').style.display = 'none';
+  hideBatchBar(); // 目录切换即失效的选中态，同步收起批量操作条
   const p = new URLSearchParams({ prefix: S.st.prefix });
   try {
     const r = await apiGet('/api/storage?' + p.toString());
@@ -46,6 +58,7 @@ async function loadStorage() {
     loading.style.display = 'none';
     body.style.display = 'block';
     S.st.files = []; S.st.dirs = []; // 清空陈旧数据，避免工具栏残留旧选择计数
+    $('#stStats').innerHTML = '';
     $('#stGrid').innerHTML = '<div class="empty">列举失败：' + esc(e.message) + '</div>';
     updateSelCount();
   }
@@ -78,6 +91,7 @@ function renderStorage() {
   const grid = $('#stGrid'); grid.innerHTML = '';
   const { dirs } = S.st;
   const files = stFiltered();
+  renderStats(dirs, files);
   if (!dirs.length && !files.length) {
     grid.innerHTML = '<div class="empty">' + (S.st.filter ? '（无匹配文件，请调整筛选条件）' : '（此目录为空）') + '</div>';
     updateSelCount();
@@ -85,16 +99,17 @@ function renderStorage() {
   }
   const MAX_RENDER = 800; // 单层文件过多时限制 DOM 量，防止万级文件冻结页面
   const shown = files.slice(0, MAX_RENDER);
+  const listMode = stView === 'list';
   dirs.forEach(d => {
     const name = d.replace(/\/+$/, '').split('/').filter(Boolean).pop() || '目录';
-    const it = document.createElement('div'); it.className = 'fitem dir';
+    const it = document.createElement('div'); it.className = 'fitem dir' + (listMode ? ' row' : '');
     it.innerHTML = '<div class="thumb">' + ic('folderOpen') + '</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
     it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
     grid.appendChild(it);
   });
   shown.forEach(f => {
     const base = f.name.split('/').pop();
-    const it = document.createElement('div'); it.className = 'fitem';
+    const it = document.createElement('div'); it.className = 'fitem' + (listMode ? ' row' : '');
     it.dataset.path = f.name;
     const thumb = document.createElement('div'); thumb.className = 'thumb';
     if (isImage(f.name)) { thumb.innerHTML = '<span class="spin"></span>'; }
@@ -148,6 +163,30 @@ function renderStorage() {
   updateSelCount();
 }
 
+// 目录统计行：N 个目录 · M 个文件 · 合计大小（仅统计当前目录直属项，不含子目录聚合）
+function renderStats(dirs, files) {
+  const el = $('#stStats');
+  if (!el) return;
+  if (!dirs.length && !files.length) { el.innerHTML = ''; return; }
+  const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
+  el.innerHTML = '<span class="sitem">' + ic('folderOpen') + '<b>' + dirs.length + '</b> 个目录</span>'
+    + '<span class="sitem">' + ic('file') + '<b>' + files.length + '</b> 个文件</span>'
+    + (files.length ? '<span class="sitem">' + ic('chart') + '合计 <b>' + fmtSize(totalSize) + '</b></span>' : '');
+}
+
+// 批量操作条：选中 >0 时出现（工具栏计数之外更醒目的集中操作区）
+function hideBatchBar() {
+  const bar = $('#stBatchBar');
+  if (bar) bar.style.display = 'none';
+}
+function showBatchBar() {
+  const bar = $('#stBatchBar');
+  if (!bar) return;
+  bar.style.display = 'flex';
+  const c = $('#stBatchCount');
+  if (c) c.textContent = stSel.size;
+}
+
 function toggleSel(name) {
   if (stSel.has(name)) stSel.delete(name); else stSel.add(name);
   $$('#stGrid .fitem').forEach(el => { if (el.dataset.path === name) el.classList.toggle('sel', stSel.has(name)); });
@@ -166,6 +205,7 @@ function clearSel() {
 function updateSelCount() {
   const c = $('#stDelete .stselcount'); if (c) c.textContent = stSel.size;
   $('#stDelete').disabled = stSel.size === 0;
+  if (stSel.size > 0) showBatchBar(); else hideBatchBar();
 }
 
 async function resolveUrl(cloudPath) {

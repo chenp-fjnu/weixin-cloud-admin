@@ -101,6 +101,7 @@ async function switchEnv(envId) {
   if (flt) flt.value = '';
   if (srt) srt.value = 'name';
   stSel = new Set();
+  hideBatchBar();
   loadOverview();
   const tab = S.activeTab || 'overview';
   if (tab === 'db') initDb();
@@ -166,6 +167,18 @@ function bindEvents() {
   $('#dbSortDir').addEventListener('change', function () { S.db.sortDir = this.value; loadDb(); });
   $('#dbPrev').addEventListener('click', function () { if (S.db.page > 1) { S.db.page--; loadDb(); } });
   $('#dbNext').addEventListener('click', function () { S.db.page++; loadDb(); });
+  // 页码跳转：回车或点「Go」；越界给出范围提示，等于当前页则忽略
+  const doPageGo = () => {
+    const el = $('#dbPageGo');
+    const v = parseInt(el.value, 10);
+    const pages = Math.max(1, Math.ceil((S.db.total || 0) / S.db.size));
+    el.value = '';
+    if (!Number.isFinite(v) || v < 1) return;
+    if (v > pages) return toast('页码超出范围（当前共 ' + pages + ' 页）', 'err');
+    if (v !== S.db.page) { S.db.page = v; loadDb(); }
+  };
+  $('#dbPageGo').addEventListener('keydown', (e) => { if (e.key === 'Enter') doPageGo(); });
+  $('#dbPageGoBtn').addEventListener('click', doPageGo);
   $('#dbAdd').addEventListener('click', async function () {
     if (!S.db.collection) return toast('请先选择集合', 'err');
     try {
@@ -182,7 +195,7 @@ function bindEvents() {
   $('#docClose').addEventListener('click', () => closeModals());
   $('#docCopy').addEventListener('click', function () {
     const t = $('#docText').value;
-    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(
+    copyText(t).then(
       () => toast('已复制', 'ok'), () => toast('复制失败', 'err')
     );
   });
@@ -206,6 +219,12 @@ function bindEvents() {
   $('#stUploadFile').addEventListener('change', uploadToCurrent);
   $('#stSelAll').addEventListener('click', selectAllPage);
   $('#stUnselAll').addEventListener('click', clearSel);
+  // 网格 / 列表视图切换（localStorage 持久化）
+  $('#stViewGrid').addEventListener('click', () => setStView('grid'));
+  $('#stViewList').addEventListener('click', () => setStView('list'));
+  // 批量操作条（选中 >0 时出现）
+  $('#stBatchUnsel').addEventListener('click', clearSel);
+  $('#stBatchDel').addEventListener('click', deleteSelected);
   // 目录内筛选 / 排序（即时生效，不再重复请求后端）
   $('#stFilter').addEventListener('input', function () { S.st.filter = this.value; renderStorage(); });
   $('#stSort').addEventListener('change', function () { S.st.sort = this.value; renderStorage(); });
@@ -264,6 +283,11 @@ document.addEventListener('DOMContentLoaded', function () {
   labelBtn('stScan', 'scan', '扫描子目录');
   labelBtn('stSelAll', 'check', '全选本页');
   labelBtn('stUnselAll', 'x', '取消全选');
+  // 存储视图模式：从 localStorage 恢复（默认网格）
+  let _sv = 'grid';
+  try { _sv = localStorage.getItem(ST_VIEW_KEY) || 'grid'; } catch (e) { /* ignore */ }
+  if (_sv !== 'grid' && _sv !== 'list') _sv = 'grid';
+  setStView(_sv);
   resetDeleteBtn();
   // 图标占位符填充（搜索框放大镜 / 上传按钮等）
   $$('.si').forEach(el => el.innerHTML = ic(el.getAttribute('data-ic') || 'search'));
