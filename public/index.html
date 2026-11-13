@@ -4,130 +4,172 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>云端数据管理台</title>
-<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%232f5f52"/><text x="32" y="43" font-size="30" text-anchor="middle" fill="white" font-family="sans-serif">云</text></svg>' />
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%233556e8"/><text x="32" y="43" font-size="30" text-anchor="middle" fill="white" font-family="sans-serif">云</text></svg>' />
 <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-<header>
-  <div class="hbar">
-    <div class="brand">
-      <div class="logo">云</div>
+<div id="app">
+  <!-- ================= 侧边导航 ================= -->
+  <aside id="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo" data-ic="cloud" data-big></div>
+      <div class="txt">
+        <div class="t1">云端数据管理台</div>
+        <div class="t2">数据库 · 云存储运维</div>
+      </div>
+    </div>
+    <div class="navlabel">功能导航</div>
+    <div class="navitem active" data-tab="overview" role="tab" aria-selected="true" title="概览（快捷键 1）"><span class="ni" data-ic="grid"></span><span class="txt">概览</span><span class="kbd">1</span></div>
+    <div class="navitem" data-tab="db" role="tab" aria-selected="false" title="云数据库（快捷键 2）"><span class="ni" data-ic="db"></span><span class="txt">云数据库</span><span class="kbd">2</span></div>
+    <div class="navitem" data-tab="storage" role="tab" aria-selected="false" title="云存储（快捷键 3）"><span class="ni" data-ic="folder"></span><span class="txt">云存储</span><span class="kbd">3</span></div>
+    <div class="sidebar-foot">
+      <div class="envctl">
+        <div class="lbl"><span class="ei" data-ic="cloud"></span>云环境</div>
+        <select id="envSelect" title="切换云环境"></select>
+      </div>
+      <div class="conn-card off" id="connBadge" title="点击查看服务状态并刷新连接">
+        <span class="dot" id="connDot"></span>
+        <span class="tx" id="connText">连接中…</span>
+        <span class="st" id="connSt"></span>
+      </div>
+      <button class="themebtn" id="themeBtn" title="切换浅色 / 深色主题"><span class="ti" data-ic="moon"></span><span class="txt">切换主题</span></button>
+    </div>
+  </aside>
+
+  <!-- ================= 主区域 ================= -->
+  <main>
+    <div class="hbar">
       <div>
-        <h1>云端数据管理台</h1>
-        <div class="sub">云开发环境全量数据 · 数据库 + 云存储运维</div>
+        <h1 id="pageTitle">概览</h1>
+        <div class="sub" id="pageSub">云开发环境数据总览</div>
       </div>
+      <div class="spacer"></div>
     </div>
-    <div class="spacer"></div>
-    <span class="envchip" title="切换云环境"><span class="envlbl">env</span><select id="envSelect"></select></span>
-    <span class="badge" id="connBadge" title="点击查看服务状态并刷新连接"><span class="dot" id="connDot"></span><span id="connText">连接中…</span></span>
-  </div>
-  <nav>
-    <div class="tab active" data-tab="overview" role="tab" aria-selected="true">概览</div>
-    <div class="tab" data-tab="db" role="tab" aria-selected="false">云数据库</div>
-    <div class="tab" data-tab="storage" role="tab" aria-selected="false">云存储</div>
-  </nav>
-</header>
 
-<div class="wrap">
-  <!-- ================= 概览 ================= -->
-  <section class="section active" id="sec-overview" role="tabpanel">
-    <div class="panel">
-      <div class="banner" id="ovBanner"></div>
-      <div class="row2" style="margin-bottom:12px">
-        <span class="hint" id="ovUpdatedAt"></span>
-        <div class="spacer"></div>
-        <button class="btn sm" id="ovRefresh">↻ 刷新</button>
-      </div>
-      <div id="ovLoading" class="empty"><span class="spin"></span> 正在统计…</div>
-      <div id="ovBody" style="display:none">
-        <h2 class="sect">数据库集合文档数<span class="ln"></span><span class="muted" id="ovDbTotal"></span></h2>
-        <div class="grid cards" id="ovCards"></div>
-        <h2 class="sect">云存储概览<span class="ln"></span></h2>
-        <div class="grid cards" id="ovStorageCards"></div>
-        <p class="hint">* 云存储概览自根目录采样统计（上限 5000 个文件），若文件过多可能未计全；精确内容请进入「云存储」逐层浏览。</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- ================= 数据库 ================= -->
-  <section class="section" id="sec-db" role="tabpanel">
-    <div class="panel">
-      <div class="toolbar">
-        <label style="color:var(--ink2);font-size:13px">集合</label>
-        <select id="dbCollection" style="min-width:210px"></select>
-        <button class="btn sm" id="dbRefresh">刷新</button>
-        <div class="spacer"></div>
-        <label style="color:var(--ink2);font-size:13px">字段</label>
-        <select id="dbField"><option value="">（全字段）</option></select>
-        <input id="dbQuery" class="mono" placeholder="正则 如 ^wt_|openid$" style="width:150px" />
-        <button class="btn sm" id="dbSearch">筛选</button>
-        <label style="color:var(--ink2);font-size:13px;margin-left:6px">排序</label>
-        <select id="dbSort"><option value="">默认</option></select>
-        <select id="dbSortDir"><option value="desc">降序</option><option value="asc">升序</option></select>
-      </div>
-      <div class="toolbar" style="margin-top:-6px">
-        <button class="btn pri sm" id="dbAdd">＋ 新增文档</button>
-        <div class="spacer"></div>
-        <span id="dbCount" class="muted" style="font-size:13px"></span>
-      </div>
-      <div style="overflow:auto;max-height:64vh;border:1px solid var(--line);border-radius:10px">
-        <table>
-          <thead><tr id="dbHead"></tr></thead>
-          <tbody id="dbBody"></tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <div style="display:flex;gap:10px;align-items:center">
-          <select id="dbSize" class="pgsize" title="每页条数">
-            <option value="20">20 条/页</option>
-            <option value="50">50 条/页</option>
-            <option value="100">100 条/页</option>
-          </select>
-          <button class="btn sm" id="dbPrev">‹ 上一页</button>
-          <button class="btn sm" id="dbNext">下一页 ›</button>
+    <div class="wrap">
+      <!-- ================= 概览 ================= -->
+      <section class="section active" id="sec-overview" role="tabpanel">
+        <div class="pagehead">
+          <div>
+            <h2>数据概览</h2>
+            <div class="sub" id="ovUpdatedAt"></div>
+          </div>
+          <div class="acts">
+            <button class="btn sm" id="ovRefresh"></button>
+          </div>
         </div>
-        <div id="dbPageInfo" class="muted"></div>
-      </div>
-    </div>
-  </section>
+        <div class="banner" id="ovBanner"></div>
+        <div id="ovKpis" class="kpis"></div>
+        <div id="ovLoading" class="empty" style="padding:36px 20px"><span class="spin"></span> 正在统计…</div>
+        <div id="ovBody" style="display:none">
+          <h2 class="sect">数据库集合文档数<span class="ln"></span><span class="cnt" id="ovDbTotal"></span></h2>
+          <div class="grid cards" id="ovCards"></div>
+          <h2 class="sect">云存储概览<span class="ln"></span></h2>
+          <div class="grid cards" id="ovStorageCards"></div>
+          <p class="hint">* 云存储概览自根目录采样统计（上限 5000 个文件），若文件过多可能未计全；精确内容请进入「云存储」逐层浏览。</p>
+        </div>
+      </section>
 
-  <!-- ================= 云存储 ================= -->
-  <section class="section" id="sec-storage" role="tabpanel">
-    <div class="panel">
-      <div class="crumbs" id="stCrumbs"></div>
-      <div class="toolbar">
-        <button class="btn sm" id="stUp">↑ 上级</button>
-        <button class="btn sm" id="stRefresh">刷新</button>
-        <div class="spacer"></div>
-        <button class="btn sm" id="stScan">🔎 扫描子目录</button>
-        <label class="btn sm" style="margin:0">
-          <input type="file" id="stUploadFile" style="display:none" />
-          <span id="stUploadLbl">上传文件到当前目录</span>
-        </label>
-        <button class="btn sm" id="stSelAll">全选本页</button>
-        <button class="btn sm" id="stUnselAll">取消全选</button>
-        <button class="btn danger sm" id="stDelete" disabled>删除所选（<span class="stselcount">0</span>）</button>
-      </div>
-      <div id="stLoading" class="empty"><span class="spin"></span> 正在列举…</div>
-      <div id="stBody" style="display:none">
-        <div class="filegrid" id="stGrid"></div>
-      </div>
-      <div id="stScanPanel" style="display:none;margin-top:18px">
-        <h2 class="sect">子目录（按当前目录下一级路径段聚合）<span class="ln"></span></h2>
-        <div class="userlist" id="stUserList"></div>
-      </div>
+      <!-- ================= 数据库 ================= -->
+      <section class="section" id="sec-db" role="tabpanel">
+        <div class="pagehead">
+          <div>
+            <h2>云数据库</h2>
+            <div class="sub" id="dbCount"></div>
+          </div>
+          <div class="acts">
+            <button class="btn pri sm" id="dbAdd"></button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="fl">集合</label>
+          <select id="dbCollection" style="min-width:200px"></select>
+          <button class="btn sm" id="dbRefresh"></button>
+          <span class="sep"></span>
+          <label class="fl">字段</label>
+          <select id="dbField"><option value="">（全字段）</option></select>
+          <span class="searchbox"><span class="si"></span><input id="dbQuery" class="mono" placeholder="正则 如 ^wt_|openid$" style="width:185px" /></span>
+          <button class="btn sm" id="dbSearch"></button>
+          <span class="sep"></span>
+          <label class="fl">排序</label>
+          <select id="dbSort"><option value="">默认</option></select>
+          <select id="dbSortDir" title="排序方向（自动排序时不可用）"><option value="desc">降序</option><option value="asc">升序</option></select>
+        </div>
+        <div class="tblwrap">
+          <table>
+            <thead><tr id="dbHead"></tr></thead>
+            <tbody id="dbBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <div class="acts">
+            <select id="dbSize" class="pgsize" title="每页条数">
+              <option value="20">20 条/页</option>
+              <option value="50">50 条/页</option>
+              <option value="100">100 条/页</option>
+            </select>
+            <button class="btn sm" id="dbPrev"></button>
+            <button class="btn sm" id="dbNext"></button>
+          </div>
+          <div id="dbPageInfo" class="pginfo"></div>
+        </div>
+      </section>
+
+      <!-- ================= 云存储 ================= -->
+      <section class="section" id="sec-storage" role="tabpanel">
+        <div class="pagehead">
+          <div>
+            <h2>云存储</h2>
+            <div class="sub">目录浏览 · 预览 · 上传 · 批量管理</div>
+          </div>
+          <div class="acts">
+            <button class="btn sm" id="stScan"></button>
+            <label class="btn pri sm" style="margin:0"><span class="si" data-ic="upload"></span><input type="file" id="stUploadFile" style="display:none" /><span id="stUploadLbl">上传文件</span></label>
+          </div>
+        </div>
+        <div class="crumbs" id="stCrumbs"></div>
+        <div class="toolbar">
+          <button class="btn sm" id="stUp"></button>
+          <button class="btn sm" id="stRefresh"></button>
+          <span class="sep"></span>
+          <span class="searchbox"><span class="si"></span><input type="text" id="stFilter" placeholder="筛选文件名…" style="width:180px" /></span>
+          <select id="stSort" title="排序方式">
+            <option value="name">名称</option>
+            <option value="size">大小 ↓</option>
+            <option value="date">最新</option>
+          </select>
+          <div class="spacer"></div>
+          <button class="btn sm" id="stSelAll"></button>
+          <button class="btn sm" id="stUnselAll"></button>
+          <button class="btn danger sm" id="stDelete" disabled>删除所选（<span class="stselcount">0</span>）</button>
+        </div>
+        <div id="stLoading" class="empty" style="padding:36px 20px"><span class="spin"></span> 正在列举…</div>
+        <div id="stBody" style="display:none">
+          <div class="filegrid" id="stGrid"></div>
+        </div>
+        <div id="stScanPanel" style="display:none;margin-top:18px">
+          <h2 class="sect">子目录（按当前目录下一级路径段聚合）<span class="ln"></span></h2>
+          <div class="userlist" id="stUserList"></div>
+        </div>
+      </section>
     </div>
-  </section>
+  </main>
 </div>
 
 <!-- 文档查看/编辑 -->
 <div class="mask" id="docMask">
   <div class="modal">
-    <div class="mh"><h3 id="docTitle">文档</h3><button class="btn sm ghost" data-close="docMask">✕</button></div>
-    <div class="mb"><textarea class="code" id="docText" spellcheck="false"></textarea></div>
+    <div class="mh"><h3 id="docTitle">文档</h3><span class="mid" id="docId"></span><button class="btn sm ghost" data-close="docMask">✕</button></div>
+    <div class="mb">
+      <textarea class="code" id="docText" spellcheck="false"></textarea>
+      <pre class="code hl" id="docPre" style="display:none"></pre>
+    </div>
     <div class="mf">
-      <button class="btn sm" id="docEdit" style="display:none">✎ 进入编辑</button>
-      <button class="btn sm ghost" id="docCopy">复制</button>
+      <span class="dirty" id="docDirty">● 有未保存的修改</span>
+      <button class="btn sm" id="docFmt">格式化</button>
+      <button class="btn sm" id="docCompress">压缩</button>
+      <button class="btn sm" id="docCopy"></button>
+      <button class="btn sm" id="docEdit" style="display:none"></button>
       <button class="btn sm" id="docClose">关闭</button>
       <button class="btn pri" id="docSave" style="display:none">保存修改</button>
     </div>

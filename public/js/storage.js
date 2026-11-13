@@ -1,11 +1,34 @@
 /* 云端数据管理台 —— 云存储 Tab
-   目录浏览（面包屑）、图片缩略图（批量临时链接 + 缓存）、文件预览、
-   多选删除、单文件/拖拽上传、子目录扫描聚合。 */
+   目录浏览（图标面包屑）、图片缩略图（批量临时链接 + 缓存）、文件类型图标、
+   目录内筛选/排序、悬停单删、文件预览、多选删除、单文件/拖拽上传、子目录扫描聚合。 */
 'use strict';
 
 let stSel = new Set();
 let stUrlSeq = 0; // 缩略图批量 URL 请求序号：目录切换后丢弃过期结果
 function isImage(name) { return /\.(jpe?g|png|webp|gif|bmp|svg)$/i.test(name); }
+
+// 文件类型 → 图标名
+function fileIcon(name) {
+  const ext = (name.match(/\.([^.]+)$/) || [])[1] || '';
+  const e = ext.toLowerCase();
+  if (isImage(name)) return 'image';
+  if (['mp4', 'mov', 'webm', 'avi', 'mkv', 'm4v'].includes(e)) return 'video';
+  if (['mp3', 'wav', 'flac', 'm4a', 'ogg', 'aac'].includes(e)) return 'music';
+  if (['pdf', 'doc', 'docx', 'txt', 'md', 'rtf'].includes(e)) return 'fileText';
+  if (['zip', 'rar', '7z', 'gz', 'tar', 'iso'].includes(e)) return 'archive';
+  if (['js', 'ts', 'jsx', 'tsx', 'json', 'html', 'css', 'py', 'sh'].includes(e)) return 'code';
+  return 'file';
+}
+// 当前筛选后的文件列表
+function stFiltered() {
+  const kw = (S.st.filter || '').trim().toLowerCase();
+  let files = S.st.files;
+  if (kw) files = files.filter(f => f.name.toLowerCase().includes(kw));
+  if (S.st.sort === 'size') files = files.slice().sort((a, b) => (b.size || 0) - (a.size || 0));
+  else if (S.st.sort === 'date') files = files.slice().sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0));
+  else files = files.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh'));
+  return files;
+}
 
 async function loadStorage() {
   stSel = new Set();
@@ -33,12 +56,13 @@ function renderCrumbs() {
   const parts = S.st.prefix.replace(/\/+$/, '').split('/').filter(Boolean);
   const mk = (label, prefix, cur) => {
     const c = document.createElement('span');
-    c.className = 'c' + (cur ? ' cur' : ''); c.textContent = label;
+    c.className = 'c' + (cur ? ' cur' : '');
+    c.innerHTML = ic(cur ? 'folderOpen' : 'folder') + '<span>' + esc(label) + '</span>';
     if (!cur) c.addEventListener('click', () => { S.st.prefix = prefix; loadStorage(); });
-    else c.className = 'c cur';
     box.appendChild(c);
   };
-  const root = document.createElement('span'); root.className = 'c'; root.textContent = '根 /';
+  const root = document.createElement('span'); root.className = 'c';
+  root.innerHTML = ic('grid') + '<span>根目录</span>';
   root.addEventListener('click', () => { S.st.prefix = ''; loadStorage(); });
   box.appendChild(root);
   let acc = '';
@@ -47,17 +71,15 @@ function renderCrumbs() {
     acc += (acc ? '/' : '') + seg;
     mk(seg, acc + '/', i === parts.length - 1);
   });
-  if (S.st.prefix === '') {
-    // 空
-  }
   $('#stUp').disabled = S.st.prefix.length <= 1;
 }
 
 function renderStorage() {
   const grid = $('#stGrid'); grid.innerHTML = '';
-  const { dirs, files } = S.st;
+  const { dirs } = S.st;
+  const files = stFiltered();
   if (!dirs.length && !files.length) {
-    grid.innerHTML = '<div class="empty">（此目录为空）</div>';
+    grid.innerHTML = '<div class="empty">' + (S.st.filter ? '（无匹配文件，请调整筛选条件）' : '（此目录为空）') + '</div>';
     updateSelCount();
     return;
   }
@@ -66,7 +88,7 @@ function renderStorage() {
   dirs.forEach(d => {
     const name = d.replace(/\/+$/, '').split('/').filter(Boolean).pop() || '目录';
     const it = document.createElement('div'); it.className = 'fitem dir';
-    it.innerHTML = '<div class="thumb">📁</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
+    it.innerHTML = '<div class="thumb">' + ic('folderOpen') + '</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
     it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
     grid.appendChild(it);
   });
@@ -76,14 +98,23 @@ function renderStorage() {
     it.dataset.path = f.name;
     const thumb = document.createElement('div'); thumb.className = 'thumb';
     if (isImage(f.name)) { thumb.innerHTML = '<span class="spin"></span>'; }
-    else thumb.textContent = '📄';
+    else thumb.innerHTML = ic(fileIcon(f.name));
     const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = base;
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = fmtSize(f.size) + (f.lastModified ? ' · ' + fmtDate(f.lastModified) : '');
-    const ck = document.createElement('div'); ck.className = 'ck'; ck.textContent = '✓';
-    it.append(thumb, nm, meta, ck);
+    // 悬停操作：预览 + 单删
+    const ops = document.createElement('div'); ops.className = 'ops';
+    const bPrev = document.createElement('button'); bPrev.className = 'iconbtn'; bPrev.title = '预览';
+    bPrev.innerHTML = ic('eye');
+    bPrev.addEventListener('click', (e) => { e.stopPropagation(); previewFile(f); });
+    const bDel = document.createElement('button'); bDel.className = 'iconbtn'; bDel.title = '删除该文件';
+    bDel.innerHTML = ic('trash');
+    bDel.addEventListener('click', (e) => { e.stopPropagation(); delFileOne(f.name); });
+    ops.append(bPrev, bDel);
+    const ck = document.createElement('div'); ck.className = 'ck'; ck.innerHTML = ic('check');
+    it.append(thumb, nm, meta, ops, ck);
     it.addEventListener('click', (e) => {
-      if (e.target === ck || e.target === ck.firstChild) { toggleSel(f.name); return; }
+      if (e.target === ck || ck.contains(e.target)) { toggleSel(f.name); return; }
       previewFile(f);
     });
     if (stSel.has(f.name)) it.classList.add('sel');
@@ -108,9 +139,9 @@ function renderStorage() {
         if (url) {
           const img = document.createElement('img');
           img.src = url; img.alt = '';
-          img.addEventListener('error', () => { th.textContent = '📄'; }); // 链接失效时兜底，不整块消失
+          img.addEventListener('error', () => { th.innerHTML = ic('file'); }); // 链接失效时兜底，不整块消失
           th.innerHTML = ''; th.appendChild(img);
-        } else if (th.querySelector('.spin')) th.textContent = '📄'; // 取 URL 失败：spinner 转成占位，不永久转圈
+        } else if (th.querySelector('.spin')) th.innerHTML = ic('image'); // 取 URL 失败：spinner 转成占位，不永久转圈
       });
     });
   }
@@ -217,17 +248,16 @@ async function scanDirs() {
   }
 }
 
+// ---------- 删除（批量 / 单个共用核心） ----------
 let _delBusySt = false;
-async function deleteSelected() {
-  const arr = Array.from(stSel);
-  if (!arr.length || _delBusySt) return;
-  _delBusySt = true; // 防重入：与按钮 disabled 双保险（旧实现该标志从未置位，守卫是死代码）
-  const preview = arr.slice(0, 20).map(x => '· ' + x.split('/').pop()).join('\n') + (arr.length > 20 ? '\n… 等 ' + arr.length + ' 个' : '');
-  if (!confirm('确认删除所选 ' + arr.length + ' 个云文件？\n\n' + preview + '\n\n此操作不可撤销。')) {
-    _delBusySt = false;
-    return;
-  }
-  const btn = $('#stDelete'); btn.disabled = true; btn.textContent = '删除中…';
+function resetDeleteBtn() {
+  const btn = $('#stDelete');
+  btn.innerHTML = ic('trash') + '删除所选（<span class="stselcount">0</span>）';
+  btn.disabled = true;
+}
+async function doDelete(arr) {
+  _delBusySt = true;
+  const btn = $('#stDelete'); btn.disabled = true;
   let ok = 0;
   try {
     // 每批 50 个串行删除，汇总真实删除数（旧实现后端静默截断 50 个但前端报全量，数据不一致）
@@ -242,9 +272,22 @@ async function deleteSelected() {
     updateSelCount(); // 部分成功时刷新按钮计数，保留已选供重试
   } finally {
     _delBusySt = false;
-    btn.textContent = '删除所选（<span class="stselcount"></span>）';
+    resetDeleteBtn();
     updateSelCount();
   }
+}
+function deleteSelected() {
+  const arr = Array.from(stSel);
+  if (!arr.length || _delBusySt) return;
+  const preview = arr.slice(0, 20).map(x => '· ' + x.split('/').pop()).join('\n') + (arr.length > 20 ? '\n… 等 ' + arr.length + ' 个' : '');
+  if (!confirm('确认删除所选 ' + arr.length + ' 个云文件？\n\n' + preview + '\n\n此操作不可撤销。')) return;
+  doDelete(arr);
+}
+function delFileOne(path) {
+  if (_delBusySt) return;
+  if (!S.st.files.some(f => f.name === path)) return;
+  if (!confirm('确认删除云文件 ' + path + ' ？此操作不可撤销。')) return;
+  doDelete([path]);
 }
 
 // 上传核心：上传单个文件到当前目录，返回是否成功（文件选择器与拖拽共用）
@@ -254,7 +297,7 @@ async function uploadOneFile(file) {
   const cloudPath = S.st.prefix + base + '-' + Date.now() + ext;
   if (!confirm('上传到：\n' + cloudPath + '\n\n确认？')) return false;
   const lbl = $('#stUploadLbl');
-  if (lbl.textContent !== '上传文件到当前目录') return false; // 防重复上传
+  if (lbl.textContent !== '上传文件') return false; // 防重复上传
   lbl.textContent = '上传中…';
   try {
     const envParam = S.env ? '&env=' + encodeURIComponent(S.env) : '';
@@ -264,7 +307,7 @@ async function uploadOneFile(file) {
     toast('已上传：' + (data.fileID || cloudPath), 'ok');
     return true;
   } catch (e) { toast('上传失败：' + e.message, 'err'); return false; }
-  finally { lbl.textContent = '上传文件到当前目录'; }
+  finally { lbl.textContent = '上传文件'; }
 }
 async function uploadToCurrent() {
   const input = $('#stUploadFile');

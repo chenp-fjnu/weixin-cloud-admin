@@ -1,5 +1,5 @@
 /* 云端数据管理台 —— 云数据库 Tab + 文档查看/编辑模态框
-   集合下拉、分页/筛选/排序、表格渲染（cloud:// 图片批量取临时链接）、文档 CRUD。
+   集合下拉、分页/筛选/排序、表格渲染（_id 列 + 行点击 + cloud:// 图片批量临时链接）、文档 CRUD。
    openCollection 供概览卡片点击跳转调用（见 overview.js）。 */
 'use strict';
 
@@ -37,13 +37,7 @@ async function loadCollections() {
 
 async function openCollection(name) {
   // 手动切换 Tab UI（不经过 switchTab，避免其内部 fire-and-forget 的 initDb 与此处产生竞态）
-  S.activeTab = 'db';
-  $$('.tab').forEach(t => {
-    const on = t.dataset.tab === 'db';
-    t.classList.toggle('active', on);
-    t.setAttribute('aria-selected', on ? 'true' : 'false');
-  });
-  $$('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-db'));
+  setNav('db');
 
   // 确保集合列表加载完毕后再设置值（loadCollections 会重建 <select>，必须先等它完成）
   if (!dbInited) {
@@ -71,7 +65,7 @@ async function loadDb() {
   const body = $('#dbBody');
   body.innerHTML = '<tr><td colspan="15" class="empty"><span class="spin"></span> 加载中…</td></tr>';
   $('#dbPageInfo').textContent = '加载中…';
-  $('#dbCount').textContent = '…';
+  $('#dbCount').textContent = '加载中…';
   // 排序：用户显式选了字段 → 用所选 + 所选方向；否则（「默认」）→ 自动按时间字段倒序
   const auto = pickTimeField(S.db.fieldsSet);
   const sort = S.db.sort || auto || '';
@@ -117,7 +111,7 @@ function fillDbFields(docs) {
   else sortSel.value = '';
 }
 
-// 系统/内部字段：以下划线开头（_id、_openid 等），列表不展示、不进筛选/排序下拉
+// 系统/内部字段：以下划线开头（_id、_openid 等），不进筛选/排序下拉（_id 单独作为只读列展示）
 function isSystemField(k) { return typeof k === 'string' && k.indexOf('_') === 0; }
 // 从字段并集里挑出最可能的「时间」字段，用于默认排序；找不到返回 ''
 // 入参兼容数组与 Set（S.db.fieldsSet 运行时是 Set，Set 无 indexOf，须先归一化）
@@ -155,22 +149,33 @@ function pillFor(field, value) {
     if (value === 'invite') return '<span class="pill inv">私密圈</span>';
   }
   if (field === 'isSquare' && value === true) return '<span class="pill">广场</span>';
-  if (field === 'deleted' && value === true) return '<span class="pill" style="background:var(--red-bg);color:var(--red)">已删</span>';
+  if (field === 'deleted' && value === true) return '<span class="pill" style="background:var(--danger-bg);color:var(--danger)">已删</span>';
   return null;
 }
 
 function renderDbTable() {
   S.db.cols = fieldColumns(S.db.docs);
-  // 动态表头：业务字段（已剔除 _id 等系统字段）+ 操作
-  $('#dbHead').innerHTML = S.db.cols.map(c => '<th>' + esc(c) + '</th>').join('') + '<th>操作</th>';
+  const totalCols = S.db.cols.length + 2; // _id 列 + 操作列
+  // 页头副标题：文档总数
+  $('#dbCount').textContent = S.db.docs.length ? ('共 ' + fmtNum(S.db.total) + ' 条文档 · 当前集合 ' + S.db.collection) : ('集合 ' + S.db.collection + ' 无文档');
+  // 动态表头：_id + 业务字段（已剔除 _openid 等其余系统字段）+ 操作
+  $('#dbHead').innerHTML = '<th class="id">_id</th>' + S.db.cols.map(c => '<th>' + esc(c) + '</th>').join('') + '<th class="opcell">操作</th>';
   const body = $('#dbBody'); body.innerHTML = '';
   if (!S.db.docs.length) {
-    body.innerHTML = '<tr><td colspan="' + (S.db.cols.length + 1) + '" class="empty">（空集合或无匹配）</td></tr>';
+    body.innerHTML = '<tr><td colspan="' + totalCols + '" class="empty">（空集合或无匹配）</td></tr>';
+    updatePager(0);
+    return;
   }
   // 先收集本页所有 cloud:// 图片，渲染后一次性批量取临时链接（每格单发 → 一次批量）
   const imgRels = [];
   S.db.docs.forEach(d => {
     const tr = document.createElement('tr');
+    // _id 列（只读）
+    const idTd = document.createElement('td');
+    idTd.className = 'id';
+    idTd.textContent = d._id;
+    idTd.title = d._id;
+    tr.appendChild(idTd);
     S.db.cols.forEach(col => {
       const td = document.createElement('td');
       const pill = pillFor(col, d[col]);
@@ -191,19 +196,23 @@ function renderDbTable() {
       tr.appendChild(td);
     });
     const opCell = document.createElement('td');
-    const bView = mkBtn('查看', () => openDoc(d._id));
-    const bEdit = mkBtn('编辑', () => openDoc(d._id, true));
-    const bDel = mkBtn('删除', () => delDoc(d._id)); bDel.className += ' danger';
+    opCell.className = 'opcell';
+    const bView = mkBtn('查看', () => openDoc(d._id), 'ghost');
+    const bEdit = mkBtn('编辑', () => openDoc(d._id, true), 'ghost');
+    const bDel = mkBtn('删除', () => delDoc(d._id), 'danger ghost'); bDel.title = '删除该文档';
     opCell.append(bView, bEdit, bDel);
     tr.appendChild(opCell);
+    // 行点击 → 查看文档；操作列点击不冒泡
+    tr.addEventListener('click', (e) => {
+      if (opCell.contains(e.target)) return;
+      openDoc(d._id);
+    });
     body.appendChild(tr);
   });
   // 分页信息
   const pages = Math.max(1, Math.ceil(S.db.total / S.db.size));
-  $('#dbPageInfo').textContent = '第 ' + S.db.page + ' / ' + pages + ' 页 · 共 ' + S.db.total + ' 条';
-  $('#dbPrev').disabled = S.db.page <= 1;
-  $('#dbNext').disabled = S.db.page >= pages;
-  $('#dbCount').textContent = S.db.total + ' 条文档';
+  updatePager(pages);
+  $('#dbPageInfo').textContent = '第 ' + S.db.page + ' / ' + pages + ' 页 · 共 ' + fmtNum(S.db.total) + ' 条';
   // 批量填充本页 cloud:// 图片缩略图
   if (imgRels.length) {
     const tok = ++_imgTok;
@@ -215,12 +224,16 @@ function renderDbTable() {
           td.innerHTML = '';
           const img = document.createElement('img');
           img.className = 'cellimg'; img.src = url; img.alt = '预览';
-          img.addEventListener('click', () => previewFile({ name: td.dataset.rel }));
+          img.addEventListener('click', (e) => { e.stopPropagation(); previewFile({ name: td.dataset.rel }); });
           td.appendChild(img);
         } else td.innerHTML = '<span class="muted">—</span>';
       });
     });
   }
+}
+function updatePager(pages) {
+  $('#dbPrev').disabled = S.db.page <= 1;
+  $('#dbNext').disabled = pages ? S.db.page >= pages : true;
 }
 let _imgTok = 0; // 表格重渲染令牌：丢弃上一批未完成的图片 URL 填充
 
@@ -232,14 +245,46 @@ function mkBtn(label, fn, cls) {
   return b;
 }
 
+// ---------- JSON 语法高亮 ----------
+function highlightJson(text) {
+  // 先转义 HTML，再用正则给 token 上色（字符串、键、数字、布尔、null）
+  const s = esc(text);
+  return s.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    (match) => {
+      let cls = 'jn';
+      if (/^"/.test(match)) cls = /:\s*$/.test(match) ? 'jk' : 'js';
+      else if (/true|false/.test(match)) cls = 'jb';
+      else if (/null/.test(match)) cls = 'jnull';
+      return '<span class="' + cls + '">' + match + '</span>';
+    }
+  );
+}
+
 // ---------- 文档查看 / 编辑 / 删除 ----------
 let _editing = null; // { name, id }
 let _editOrig = ''; // 打开（或进入编辑）时的原始文本，用于未保存检测
 function setDocMode(edit) {
+  const ta = $('#docText'), pre = $('#docPre');
+  if (edit) {
+    pre.style.display = 'none';
+    ta.style.display = '';
+    ta.readOnly = false;
+  } else {
+    pre.innerHTML = highlightJson(ta.value);
+    pre.style.display = '';
+    ta.style.display = 'none';
+    ta.readOnly = true;
+  }
   $('#docEdit').style.display = edit ? 'none' : '';
   $('#docSave').style.display = edit ? '' : 'none';
-  $('#docText').readOnly = !edit;
-  if (edit) _editOrig = $('#docText').value;
+  // 进入编辑时记录基准文本
+  if (edit) _editOrig = ta.value;
+  updateDirty();
+}
+function updateDirty() {
+  const d = !!_editing && $('#docMask').classList.contains('show') && $('#docText').value !== _editOrig;
+  $('#docDirty').classList.toggle('show', d);
 }
 function docDirty() {
   return !!_editing && $('#docMask').classList.contains('show') && $('#docText').value !== _editOrig;
@@ -251,7 +296,8 @@ async function openDoc(id, edit) {
   catch (e) { return toast('读取文档失败：' + e.message, 'err'); }
   _editing = { name, id };
   const idShort = id.length > 16 ? id.slice(0, 16) + '…' : id;
-  $('#docTitle').textContent = '文档 · ' + name + '（' + idShort + '）';
+  $('#docTitle').textContent = '文档 · ' + name;
+  $('#docId').textContent = idShort;
   $('#docText').value = JSON.stringify(doc, null, 2);
   _editOrig = $('#docText').value;
   setDocMode(!!edit);
@@ -263,6 +309,20 @@ function closeModals(force) {
   if (!force && docDirty() && !confirm('当前文档有未保存的修改，确定放弃并关闭？')) return;
   $$('.mask.show').forEach(m => m.classList.remove('show'));
   _editing = null;
+}
+
+function fmtDocBtn(kind) {
+  const ta = $('#docText');
+  const inEdit = !ta.readOnly;
+  try {
+    const obj = JSON.parse(ta.value);
+    ta.value = JSON.stringify(obj, null, kind === 'fmt' ? 2 : 0);
+    if (!inEdit) {
+      // 查看态：重新生成高亮 pre
+      $('#docPre').innerHTML = highlightJson(ta.value);
+    }
+    updateDirty();
+  } catch (e) { toast('JSON 非法：' + e.message, 'err'); }
 }
 
 async function saveDoc() {
