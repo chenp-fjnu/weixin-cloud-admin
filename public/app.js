@@ -10,6 +10,7 @@ const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 
 function toast(msg, type) {
   const box = $('#toasts');
+  while (box.children.length >= 4) box.firstChild.remove(); // 防连续报错时 toast 无限堆叠
   const el = document.createElement('div');
   el.className = 'toast' + (type ? ' ' + type : '');
   el.textContent = msg;
@@ -23,11 +24,16 @@ async function api(path, opts) {
   const headers = Object.assign({}, opts.headers || {});
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
   if (!/[?&]env=/.test(path) && S.env) path += (path.includes('?') ? '&' : '?') + 'env=' + encodeURIComponent(S.env);
-  const res = await fetch(path, {
-    method: opts.method || 'GET',
-    headers,
-    body: opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers,
+      body: opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined
+    });
+  } catch (e) {
+    throw new Error('无法连接本地服务：请确认 server 已启动（当前为离线状态，可点右上角状态徽章重试）');
+  }
   let data = null;
   try { data = await res.json(); } catch (e) {}
   if (!res.ok) throw new Error((data && data.error) || ('HTTP ' + res.status));
@@ -58,30 +64,38 @@ const S = {
   activeTab: 'overview',
   overview: null,
   db: { collection: '', page: 1, size: 20, total: 0, docs: [], fields: [], cols: [], sort: '', sortDir: 'asc', q: '', field: '' },
-  st: { prefix: '', files: [], dirs: [] }
+  st: { prefix: '', files: [], dirs: [], loadedAt: 0 }
 };
 try { S.env = localStorage.getItem(ENV_LS_KEY) || ''; } catch (e) { /* ignore */ }
 
 // ---------- Tab 切换 ----------
 function switchTab(name) {
   S.activeTab = name;
-  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.tab').forEach(t => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
   $$('.section').forEach(s => s.classList.toggle('active', s.id === 'sec-' + name));
   if (name === 'overview' && !S.overview) loadOverview();
   if (name === 'db') initDb();
-  if (name === 'storage') loadStorage();
+  // 15 秒内重复进入存储 Tab 不重复拉列表（数据新鲜度由 loadedAt 判定）
+  if (name === 'storage' && (!S.st.loadedAt || Date.now() - S.st.loadedAt > 15000)) loadStorage();
 }
 $$('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 
 // ---------- 连接状态 & 环境切换 ----------
+let _statusTimer = null; // 离线时每 10s 自动重试一次
 async function checkStatus() {
   try {
     const s = await api('/api/status');
     initEnvSelect(s.envsStatus || (s.envs || []).map(e => ({ envId: e, hasSecrets: true, ok: true })), s.envId);
     updateConnBadge(s.envsStatus);
+    if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = null; }
   } catch (e) {
     $('#connDot').className = 'dot off';
     $('#connText').textContent = '服务未启动';
+    if (!_statusTimer) _statusTimer = setInterval(checkStatus, 10000); // server 起来后自动恢复，无需刷新页面
   }
 }
 
@@ -118,18 +132,18 @@ async function switchEnv(envId) {
   if (!envId || envId === S.env) return;
   S.env = envId;
   try { localStorage.setItem(ENV_LS_KEY, envId); } catch (e) { /* ignore */ }
-  closeModals();
+  closeModals(true);
   // 各 tab 数据均为环境级状态：全部重置，当前 tab 重载
   S.overview = null;
   dbInited = false;
   S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
-  S.db.sort = ''; S.db.q = ''; S.db.field = '';
+  S.db.sort = ''; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
   const qEl = $('#dbQuery'), sortEl = $('#dbSort'), fieldEl = $('#dbField'), sortDirEl = $('#dbSortDir');
   if (qEl) qEl.value = '';
   if (sortEl) sortEl.value = '';
   if (fieldEl) fieldEl.value = '';
   if (sortDirEl) sortDirEl.value = 'asc';
-  S.st.prefix = ''; stSel = new Set();
+  S.st.prefix = ''; S.st.loadedAt = 0; stSel = new Set();
   loadOverview();
   const tab = S.activeTab || 'overview';
   if (tab === 'db') initDb();
@@ -145,9 +159,11 @@ async function loadOverview() {
   const banner = $('#ovBanner');
   try {
     const o = await api('/api/overview');
-    S.overview = o;
-    $('#ovLoading').style.display = 'none';
-    $('#ovBody').style.display = 'block';
+  S.overview = o;
+  S.overview.at = Date.now();
+  $('#ovLoading').style.display = 'none';
+  $('#ovBody').style.display = 'block';
+  $('#ovUpdatedAt').textContent = '统计于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
     // DB 卡片
     const cards = $('#ovCards'); cards.innerHTML = '';
     let total = 0, err = 0;
@@ -163,12 +179,14 @@ async function loadOverview() {
       cards.appendChild(c);
     }
     $('#ovDbTotal').textContent = '合计 ' + total + (err ? '（' + err + ' 个集合读取失败）' : '');
-    // 存储卡片
+    // 存储卡片（totalFiles 为 -1 表示采样未计全，展示为「—」而非负数）
     const sc = $('#ovStorageCards'); sc.innerHTML = '';
     const st = o.storage || {};
+    const filesShown = (st.totalFiles != null && st.totalFiles >= 0) ? st.totalFiles : '—';
+    const dirsShown = (st.topDirs != null && st.topDirs >= 0) ? st.topDirs : '—';
     const stCards = [
-      ['顶层目录数', st.topDirs != null ? st.topDirs : '—', '根目录下一级路径段'],
-      ['扫描文件数', st.totalFiles != null ? st.totalFiles : '—', st.truncated ? '已达采样上限 5000' : '根目录全量采样'],
+      ['顶层目录数', dirsShown, '根目录下一级路径段'],
+      ['扫描文件数', filesShown, st.truncated ? '已达采样上限 5000' : '根目录全量采样'],
       ['扫描字节合计', st.totalSize != null ? fmtSize(st.totalSize) : '—', '采样文件体积之和']
     ];
     stCards.forEach((it) => {
@@ -215,6 +233,9 @@ async function loadCollections() {
   if (!names || !names.length) names = KNOWN_COLS;
   sel.innerHTML = '';
   names.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+  if (!names.length) {
+    sel.innerHTML = '<option value="">（该环境暂无集合）</option>';
+  }
 }
 
 function openCollection(name) {
@@ -229,9 +250,15 @@ function openCollection(name) {
 
 async function loadDb() {
   const name = S.db.collection;
-  if (!name) return;
+  if (!name) {
+    $('#dbBody').innerHTML = '<tr><td colspan="15" class="empty">请先选择集合</td></tr>';
+    return;
+  }
+  // colspan 大于实际列数时浏览器会并入剩余列，不会错位
   const body = $('#dbBody');
-  body.innerHTML = '<tr><td colspan="4" class="empty"><span class="spin"></span> 加载中…</td></tr>';
+  body.innerHTML = '<tr><td colspan="15" class="empty"><span class="spin"></span> 加载中…</td></tr>';
+  $('#dbPageInfo').textContent = '加载中…';
+  $('#dbCount').textContent = '…';
   const p = new URLSearchParams({ name, page: S.db.page, size: S.db.size });
   if (S.db.q && S.db.field) { p.set('field', S.db.field); p.set('q', S.db.q); }
   if (S.db.sort) { p.set('sort', S.db.sort); p.set('sortDir', S.db.sortDir); }
@@ -244,14 +271,16 @@ async function loadDb() {
     renderDbTable();
   } catch (e) {
     if (seq !== dbSeq) return;
-    body.innerHTML = '<tr><td colspan="4" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
+    body.innerHTML = '<tr><td colspan="15" class="empty">加载失败：' + esc(e.message) + '</td></tr>';
   }
 }
 
+// 字段并集跨页累积（S.db.fieldsSet），让「筛选字段」「排序字段」下拉不因翻页丢项
 function fillDbFields(docs) {
   const f = $('#dbField'), sortSel = $('#dbSort');
-  const fields = new Set(['_id']);
-  docs.forEach(d => Object.keys(d).forEach(k => fields.add(k)));
+  if (!S.db.fieldsSet) S.db.fieldsSet = new Set(['_id']);
+  docs.forEach(d => Object.keys(d).forEach(k => S.db.fieldsSet.add(k)));
+  const fields = Array.from(S.db.fieldsSet);
   const prevField = f.value, prevSort = sortSel.value;
   f.innerHTML = '<option value="">（全字段）</option>';
   sortSel.innerHTML = '<option value="">默认</option>';
@@ -259,8 +288,8 @@ function fillDbFields(docs) {
     const o1 = document.createElement('option'); o1.value = k; o1.textContent = k; f.appendChild(o1);
     const o2 = document.createElement('option'); o2.value = k; o2.textContent = k; sortSel.appendChild(o2);
   });
-  if (prevField && fields.has(prevField)) f.value = prevField;
-  if (prevSort && fields.has(prevSort)) sortSel.value = prevSort;
+  if (prevField && S.db.fieldsSet.has(prevField)) f.value = prevField;
+  if (prevSort && S.db.fieldsSet.has(prevSort)) sortSel.value = prevSort;
 }
 
 // 按当前页文档字段并集动态生成列（_id 恒首列，其余按首次出现顺序）
@@ -298,6 +327,8 @@ function renderDbTable() {
   if (!S.db.docs.length) {
     body.innerHTML = '<tr><td colspan="' + (S.db.cols.length + 1) + '" class="empty">（空集合或无匹配）</td></tr>';
   }
+  // 先收集本页所有 cloud:// 图片，渲染后一次性批量取临时链接（每格单发 → 一次批量）
+  const imgRels = [];
   S.db.docs.forEach(d => {
     const tr = document.createElement('tr');
     S.db.cols.forEach(col => {
@@ -306,19 +337,12 @@ function renderDbTable() {
       if (pill) { td.innerHTML = pill; }
       else if (col === '_id') { td.className = 'id'; td.textContent = d[col]; td.title = d[col]; }
       else if (typeof d[col] === 'string' && /^cloud:\/\//.test(d[col]) && isImage(d[col])) {
-        // cloud:// 图片（如 imageId）→ 缩略图，点击放大预览
+        // cloud:// 图片（如 imageId）→ 缩略图，本页图片统一批量取临时链接后填充
         td.title = d[col];
         td.innerHTML = '<span class="spin"></span>';
         const rel = d[col].replace(/^cloud:\/\/[^/]+\//i, '');
-        resolveUrl(rel).then(url => {
-          if (url) {
-            td.innerHTML = '';
-            const img = document.createElement('img');
-            img.className = 'cellimg'; img.src = url; img.alt = '预览';
-            img.addEventListener('click', () => previewFile({ name: rel }));
-            td.appendChild(img);
-          } else td.innerHTML = '<span class="muted">—</span>';
-        });
+        td.dataset.rel = rel;
+        imgRels.push(rel);
       }
       else {
         const t = cellText(d[col]);
@@ -341,7 +365,25 @@ function renderDbTable() {
   $('#dbPrev').disabled = S.db.page <= 1;
   $('#dbNext').disabled = S.db.page >= pages;
   $('#dbCount').textContent = S.db.total + ' 条文档';
+  // 批量填充本页 cloud:// 图片缩略图
+  if (imgRels.length) {
+    const tok = ++_imgTok;
+    resolveUrls(Array.from(new Set(imgRels))).then(map => {
+      if (tok !== _imgTok) return; // 表格已重渲染，丢弃过期结果
+      $$('td[data-rel]', body).forEach(td => {
+        const url = map[td.dataset.rel];
+        if (url) {
+          td.innerHTML = '';
+          const img = document.createElement('img');
+          img.className = 'cellimg'; img.src = url; img.alt = '预览';
+          img.addEventListener('click', () => previewFile({ name: td.dataset.rel }));
+          td.appendChild(img);
+        } else td.innerHTML = '<span class="muted">—</span>';
+      });
+    });
+  }
 }
+let _imgTok = 0; // 表格重渲染令牌：丢弃上一批未完成的图片 URL 填充
 
 function mkBtn(label, fn, cls) {
   const b = document.createElement('button');
@@ -353,20 +395,33 @@ function mkBtn(label, fn, cls) {
 
 // ---------- 文档查看 / 编辑 / 删除 ----------
 let _editing = null; // { name, id }
+let _editOrig = ''; // 打开（或进入编辑）时的原始文本，用于未保存检测
+function setDocMode(edit) {
+  $('#docEdit').style.display = edit ? 'none' : '';
+  $('#docSave').style.display = edit ? '' : 'none';
+  $('#docText').readOnly = !edit;
+  if (edit) _editOrig = $('#docText').value;
+}
+function docDirty() {
+  return !!_editing && $('#docMask').classList.contains('show') && $('#docText').value !== _editOrig;
+}
 async function openDoc(id, edit) {
   const name = S.db.collection;
   let doc;
   try { doc = (await api('/api/doc?' + new URLSearchParams({ name, id }))).doc; }
   catch (e) { return toast('读取文档失败：' + e.message, 'err'); }
   _editing = { name, id };
-  $('#docTitle').textContent = '文档 · ' + name;
+  const idShort = id.length > 16 ? id.slice(0, 16) + '…' : id;
+  $('#docTitle').textContent = '文档 · ' + name + '（' + idShort + '）';
   $('#docText').value = JSON.stringify(doc, null, 2);
-  $('#docText').readOnly = !edit;
-  $('#docSave').style.display = edit ? '' : 'none';
+  _editOrig = $('#docText').value;
+  setDocMode(!!edit);
   showModal('docMask');
 }
 
-function closeModals() {
+function closeModals(force) {
+  // 编辑中有未保存修改时拦截（force 用于保存成功/切环境等程序化关闭）
+  if (!force && docDirty() && !confirm('当前文档有未保存的修改，确定放弃并关闭？')) return;
   $$('.mask.show').forEach(m => m.classList.remove('show'));
   _editing = null;
 }
@@ -381,7 +436,7 @@ async function saveDoc() {
   try {
     await api('/api/doc?name=' + _editing.name + '&id=' + encodeURIComponent(_editing.id), { method: 'PUT', body: doc });
     toast('已保存', 'ok');
-    closeModals();
+    closeModals(true);
     loadDb();
   } catch (e) {
     toast('保存失败：' + e.message, 'err');
@@ -389,11 +444,15 @@ async function saveDoc() {
   }
 }
 
+let _delBusy = false;
 function delDoc(id) {
+  if (_delBusy) return;
   if (!confirm('确认删除文档 ' + id + ' ？此操作不可撤销。')) return;
+  _delBusy = true;
   api('/api/doc?name=' + S.db.collection + '&id=' + encodeURIComponent(id), { method: 'DELETE' })
     .then(() => { toast('已删除', 'ok'); loadDb(); })
-    .catch(e => toast('删除失败：' + e.message, 'err'));
+    .catch(e => toast('删除失败：' + e.message, 'err'))
+    .finally(() => { _delBusy = false; });
 }
 
 // ---------- 模态框通用 ----------
@@ -413,14 +472,16 @@ async function loadStorage() {
   const p = new URLSearchParams({ prefix: S.st.prefix });
   try {
     const r = await api('/api/storage?' + p.toString());
-    S.st.files = r.files; S.st.dirs = r.prefixes;
+    S.st.files = r.files; S.st.dirs = r.prefixes; S.st.loadedAt = Date.now();
     loading.style.display = 'none'; body.style.display = 'block';
     renderCrumbs();
     renderStorage();
   } catch (e) {
     loading.style.display = 'none';
     body.style.display = 'block';
+    S.st.files = []; S.st.dirs = []; // 清空陈旧数据，避免工具栏残留旧选择计数
     $('#stGrid').innerHTML = '<div class="empty">列举失败：' + esc(e.message) + '</div>';
+    updateSelCount();
   }
 }
 
@@ -454,8 +515,11 @@ function renderStorage() {
   const { dirs, files } = S.st;
   if (!dirs.length && !files.length) {
     grid.innerHTML = '<div class="empty">（此目录为空）</div>';
+    updateSelCount();
     return;
   }
+  const MAX_RENDER = 800; // 单层文件过多时限制 DOM 量，防止万级文件冻结页面
+  const shown = files.slice(0, MAX_RENDER);
   dirs.forEach(d => {
     const name = d.split('/').pop();
     const it = document.createElement('div'); it.className = 'fitem dir';
@@ -463,7 +527,7 @@ function renderStorage() {
     it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
     grid.appendChild(it);
   });
-  files.forEach(f => {
+  shown.forEach(f => {
     const base = f.name.split('/').pop();
     const it = document.createElement('div'); it.className = 'fitem';
     it.dataset.path = f.name;
@@ -482,14 +546,28 @@ function renderStorage() {
     if (stSel.has(f.name)) it.classList.add('sel');
     grid.appendChild(it);
   });
+  if (files.length > MAX_RENDER) {
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.style.gridColumn = '1 / -1';
+    hint.textContent = '本目录文件较多，仅渲染前 ' + MAX_RENDER + ' 个（共 ' + files.length + ' 个）；如需处理其余文件，请进入子目录或用「扫描子目录」定位。';
+    grid.appendChild(hint);
+  }
   // 本页所有图片一次性批量取临时 URL（旧实现每图一个请求，20 图 = 20 次往返）
-  if (files.some(f => isImage(f.name))) {
+  if (shown.some(f => isImage(f.name))) {
     let seq = ++stUrlSeq;
-    resolveUrls(files.filter(f => isImage(f.name)).map(f => f.name)).then(map => {
+    resolveUrls(shown.filter(f => isImage(f.name)).map(f => f.name)).then(map => {
       if (seq !== stUrlSeq) return; // 目录已切换，丢弃过期结果
       $$('#stGrid .fitem').forEach(it => {
+        const th = it.querySelector('.thumb');
+        if (!th) return;
         const url = map[it.dataset.path];
-        if (url) it.querySelector('.thumb').innerHTML = '<img src="' + url + '" alt="" onerror="this.parentNode.style.display=\'none\'">';
+        if (url) {
+          const img = document.createElement('img');
+          img.src = url; img.alt = '';
+          img.addEventListener('error', () => { th.textContent = '📄'; }); // 链接失效时兜底，不整块消失
+          th.innerHTML = ''; th.appendChild(img);
+        } else if (th.querySelector('.spin')) th.textContent = '📄'; // 取 URL 失败：spinner 转成占位，不永久转圈
       });
     });
   }
@@ -501,16 +579,25 @@ function toggleSel(name) {
   $$('#stGrid .fitem').forEach(el => { if (el.dataset.path === name) el.classList.toggle('sel', stSel.has(name)); });
   updateSelCount();
 }
+function selectAllPage() {
+  S.st.files.forEach(f => stSel.add(f.name));
+  $$('#stGrid .fitem').forEach(el => { if (el.dataset.path) el.classList.add('sel'); });
+  updateSelCount();
+}
+function clearSel() {
+  stSel = new Set();
+  $$('#stGrid .fitem.sel').forEach(el => el.classList.remove('sel'));
+  updateSelCount();
+}
 function updateSelCount() {
-  $('#stSelCount').textContent = stSel.size;
+  const c = $('#stDelete .stselcount'); if (c) c.textContent = stSel.size;
   $('#stDelete').disabled = stSel.size === 0;
 }
 
 async function resolveUrl(cloudPath) {
-  try {
-    const r = await api('/api/storage/urls?' + new URLSearchParams({ fileIDs: cloudPath }));
-    return (r.urls && r.urls[cloudPath]) || '';
-  } catch (e) { return ''; }
+  // 复用批量通道与进程内缓存，避免重复请求同一文件的临时链接
+  const map = await resolveUrls([cloudPath]);
+  return map[cloudPath] || '';
 }
 // 批量取临时链接：按 50 一批并发请求，进程内缓存（临时链接 2h 有效），返回 { cloudPath: url }
 const _urlCache = new Map();
@@ -545,6 +632,10 @@ async function previewFile(f) {
   if (!url) { bodyEl.innerHTML = kv + '<div class="empty">（无法获取预览链接）</div>'; $('#fileOpen').style.display = 'none'; return; }
   if (isImage(f.name)) {
     bodyEl.innerHTML = kv + '<img class="previewimg" src="' + url + '" alt="preview">';
+    const imEl = bodyEl.querySelector('.previewimg');
+    if (imEl) imEl.addEventListener('error', () => {
+      imEl.outerHTML = '<div class="empty">图片加载失败（临时链接可能已过期），请点「刷新」重试</div>';
+    });
     $('#fileOpen').href = url; $('#fileOpen').style.display = '';
   } else {
     bodyEl.innerHTML = kv + '<pre class="code">' + esc('非图片文件，请通过「在新标签打开」下载查看。\n临时链接：\n' + url) + '</pre>';
@@ -583,9 +674,10 @@ async function scanDirs() {
   }
 }
 
+let _delBusySt = false;
 async function deleteSelected() {
   const arr = Array.from(stSel);
-  if (!arr.length) return;
+  if (!arr.length || _delBusySt) return;
   const preview = arr.slice(0, 20).map(x => '· ' + x.split('/').pop()).join('\n') + (arr.length > 20 ? '\n… 等 ' + arr.length + ' 个' : '');
   if (!confirm('确认删除所选 ' + arr.length + ' 个云文件？\n\n' + preview + '\n\n此操作不可撤销。')) return;
   const btn = $('#stDelete'); btn.disabled = true; btn.textContent = '删除中…';
@@ -600,37 +692,64 @@ async function deleteSelected() {
     loadStorage();
   } catch (e) {
     toast('删除失败：' + e.message + (ok ? '（已成功 ' + ok + ' 个）' : ''), 'err');
+    updateSelCount(); // 部分成功时刷新按钮计数，保留已选供重试
   } finally {
-    btn.innerHTML = '删除所选 (<span id="stSelCount">0</span>)'; updateSelCount();
+    _delBusySt = false;
+    btn.textContent = '删除所选（<span class="stselcount"></span>）';
+    updateSelCount();
   }
 }
 
-async function uploadToCurrent() {
-  const input = $('#stUploadFile');
-  const file = input.files && input.files[0];
-  if (!file) return;
+// 上传核心：上传单个文件到当前目录，返回是否成功（文件选择器与拖拽共用）
+async function uploadOneFile(file) {
   let ext = (file.name.match(/\.[^./]+$/) || [''])[0];
   let base = (file.name.replace(/\.[^./]+$/, '') || 'upload').replace(/[^\w\u4e00-\u9fa5-]/g, '_');
   const cloudPath = S.st.prefix + base + '-' + Date.now() + ext;
-  if (confirm('上传到：\n' + cloudPath + '\n\n确认？')) {
-    try {
-      const envParam = S.env ? '&env=' + encodeURIComponent(S.env) : '';
-      const resp = await fetch('/api/storage/upload?cloudPath=' + encodeURIComponent(cloudPath) + envParam, { method: 'POST', body: file });
-      let data = null; try { data = await resp.json(); } catch (e) {}
-      if (!resp.ok) throw new Error((data && data.error) || ('HTTP ' + resp.status));
-      toast('已上传：' + (data.fileID || cloudPath), 'ok');
-      input.value = '';
-      loadStorage();
-    } catch (e) { toast('上传失败：' + e.message, 'err'); }
-  }
+  if (!confirm('上传到：\n' + cloudPath + '\n\n确认？')) return false;
+  const lbl = $('#stUploadLbl');
+  if (lbl.textContent !== '上传文件到当前目录') return false; // 防重复上传
+  lbl.textContent = '上传中…';
+  try {
+    const envParam = S.env ? '&env=' + encodeURIComponent(S.env) : '';
+    const resp = await fetch('/api/storage/upload?cloudPath=' + encodeURIComponent(cloudPath) + envParam, { method: 'POST', body: file });
+    let data = null; try { data = await resp.json(); } catch (e) {}
+    if (!resp.ok) throw new Error((data && data.error) || ('HTTP ' + resp.status));
+    toast('已上传：' + (data.fileID || cloudPath), 'ok');
+    return true;
+  } catch (e) { toast('上传失败：' + e.message, 'err'); return false; }
+  finally { lbl.textContent = '上传文件到当前目录'; }
+}
+async function uploadToCurrent() {
+  const input = $('#stUploadFile');
+  const file = input.files && input.files[0];
   input.value = '';
+  if (!file) return;
+  if (await uploadOneFile(file)) loadStorage();
 }
 
 // ---------- 事件绑定 & 启动 ----------
 function bindEvents() {
+  // 概览
+  $('#ovRefresh').addEventListener('click', () => {
+    $('#ovLoading').style.display = '';
+    $('#ovBody').style.display = 'none';
+    loadOverview();
+  });
+  // 连接状态徽章：手动重试
+  $('#connBadge').addEventListener('click', () => {
+    if (_statusTimer) { clearInterval(_statusTimer); _statusTimer = null; }
+    checkStatus();
+  });
+
   // 数据库
   $('#dbCollection').addEventListener('change', function () {
-    S.db.collection = this.value; S.db.page = 1; loadDb();
+    S.db.collection = this.value; S.db.page = 1;
+    S.db.fieldsSet = null; S.db.q = ''; S.db.field = ''; S.db.sort = '';
+    $('#dbQuery').value = ''; $('#dbSort').value = '';
+    loadDb();
+  });
+  $('#dbSize').addEventListener('change', function () {
+    S.db.size = +this.value; S.db.page = 1; loadDb();
   });
   $('#dbRefresh').addEventListener('click', loadDb);
   $('#dbSearch').addEventListener('click', function () {
@@ -657,8 +776,9 @@ function bindEvents() {
   });
 
   // 文档模态框
+  $('#docEdit').addEventListener('click', () => setDocMode(true)); // 查看 → 直接进入编辑，无需关闭重开
   $('#docSave').addEventListener('click', saveDoc);
-  $('#docClose').addEventListener('click', closeModals);
+  $('#docClose').addEventListener('click', () => closeModals());
   $('#docCopy').addEventListener('click', function () {
     const t = $('#docText').value;
     (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(
@@ -677,9 +797,36 @@ function bindEvents() {
   $('#stScan').addEventListener('click', scanDirs);
   $('#stDelete').addEventListener('click', deleteSelected);
   $('#stUploadFile').addEventListener('change', uploadToCurrent);
+  $('#stSelAll').addEventListener('click', selectAllPage);
+  $('#stUnselAll').addEventListener('click', clearSel);
+
+  // 拖拽上传：支持多文件，逐个确认并串行上传
+  const stPanel = $('#sec-storage .panel');
+  let _dragDepth = 0;
+  const hasFiles = e => e.dataTransfer && Array.prototype.includes.call(e.dataTransfer.types, 'Files');
+  const stSec = $('#sec-storage');
+  stSec.addEventListener('dragenter', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); _dragDepth++; stPanel.classList.add('drop');
+  });
+  stSec.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+  stSec.addEventListener('dragleave', e => {
+    if (!hasFiles(e)) return;
+    _dragDepth = Math.max(0, _dragDepth - 1);
+    if (!_dragDepth) stPanel.classList.remove('drop');
+  });
+  stSec.addEventListener('drop', async e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault(); _dragDepth = 0; stPanel.classList.remove('drop');
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+    let anyOk = false;
+    for (const f of files) { if (await uploadOneFile(f)) anyOk = true; }
+    if (anyOk) loadStorage();
+  });
 
   // 模态框关闭按钮（data-close）
-  $$('[data-close]').forEach(el => el.addEventListener('click', closeModals));
+  $$('[data-close]').forEach(el => el.addEventListener('click', () => closeModals()));
   // 点击遮罩空白关闭
   $$('.mask').forEach(m => m.addEventListener('click', (e) => { if (e.target === m) closeModals(); }));
   // ESC 关闭模态框
