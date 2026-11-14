@@ -1,0 +1,82 @@
+<view class="page">
+    <!-- 环境条 -->
+    <view class="env-bar" bindtap="goEnvConfig">
+        <text class="small muted">环境</text>
+        <text class="env-name gap">{{envId || '未设置'}}</text>
+        <text class="tag gap">切换 ›</text>
+    </view>
+
+    <!-- 加载中 -->
+    <view wx:if="{{loading}}" class="state-card">
+        <view class="spinner"></view>
+        <view class="state-title">加载中</view>
+    </view>
+
+    <!-- 错误 -->
+    <view wx:elif="{{error}}" class="state-card state-card-error">
+        <view class="state-title">出错了</view>
+        <view class="state-desc">{{error}}</view>
+        <button class="btn-primary" size="mini" bindtap="onShow">重试</button>
+    </view>
+
+    <!-- 集合列表模式 -->
+    <block wx:elif="{{mode === 'collections'}}">
+        <view class="card">
+            <view class="row-between">
+                <text class="card-title">选择集合</text>
+                <text class="small muted">共 {{collections.length}} 个</text>
+            </view>
+            <view wx:if="{{!collections.length}}" class="state-desc mt">当前环境暂无集合。</view>
+            <view class="table mt" wx:else>
+                <view wx:for="{{collections}}" wx:key="*this" class="table-row" bindtap="openCollection" data-name="{{item}}">
+                    <text class="col-1">{{item}}</text>
+                    <text class="col-2">›</text>
+                </view>
+            </view>
+        </view>
+    </block>
+
+    <!-- 文档表格模式 -->
+    <block wx:elif="{{mode === 'docs'}}">
+        <view class="card">
+            <view class="row-between">
+                <text class="card-title" bindtap="backCollections">{{collection}} ‹</text>
+                <text class="small muted">共 {{total}} 条</text>
+            </view>
+
+            <!-- 检索行 -->
+            <view class="search-row mt">
+                <input class="input flex-1" placeholder="字段名（可选）" value="{{field}}" bindinput="onFieldInput" />
+                <input class="input flex-1 gap" placeholder="正则（可选）" value="{{q}}" bindinput="onQInput" bindconfirm="onSearch" />
+            </view>
+            <view class="search-row mt">
+                <input class="input flex-1" placeholder="排序字段（可选）" value="{{sort}}" bindinput="onSortInput" />
+                <input class="input sort-dir gap" placeholder="asc" value="{{sortDir}}" bindinput="onSortDirInput" />
+                <button class="btn-primary mini-btn gap" size="mini" bindtap="onSearch">查询</button>
+            </view>
+            <view class="row-between mt" wx:if="{{q || sort}}">
+                <text class="small muted" bindtap="onResetFilter">清空筛选条件</text>
+            </view>
+        </view>
+
+        <view class="card row-between">
+            <text class="small muted" wx:if="{{loadingMore}}">正在加载下一页…</text>
+            <text class="small muted" wx:elif="{{docs.length && !hasMore}}">已加载全部 {{total}} 条</text>
+            <text class="small muted" wx:elif="{{!docs.length}}">下滑加载更多</text>
+            <button class="btn-primary" size="mini" bindtap="addDoc">＋ 新增文档</button>
+        </view>
+
+        <view class="table" wx:if="{{docs.length}}">
+            <view wx:for="{{docs}}" wx:key="_idText" class="table-row" bindtap="openDoc" data-id="{{item._idText}}">
+                <view class="col-1">
+                    <text class="doc-id">{{item._idText}}</text>
+                    <view class="doc-preview">{{item._preview}}</view>
+                    <text class="small muted doc-time" wx:if="{{item._timeText}}">{{item._timeText}}</text>
+                </view>
+            </view>
+        </view>
+        <view wx:if="{{!docs.length && !loadingMore}}" class="state-card">
+            <view class="state-desc">暂无文档，或没有匹配的检索条件。</view>
+        </view>
+    </block>
+</view>

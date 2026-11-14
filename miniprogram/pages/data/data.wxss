@@ -1,0 +1,21 @@
+.search-row {
+    display: flex;
+    align-items: center;
+}
+
+.sort-dir {
+    width: 120rpx;
+    flex: none;
+}
+
+.doc-id {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 24rpx;
+    color: #1769e0;
+    word-break: break-all;
+}
+
+.doc-time {
+    display: block;
+    margin-top: 6rpx;
+}

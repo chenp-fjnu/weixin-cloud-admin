@@ -1,0 +1,24 @@
+{
+  "description": "微信云环境管理小程序（原生 + 微信云开发云函数）",
+  "packOptions": {
+    "ignore": [
+      {
+        "type": "folder",
+        "value": ".workbuddy"
+      }
+    ],
+    "include": []
+  },
+  "setting": {
+    "bundle": false,
+    "es6": true,
+    "minified": true,
+    "postcss": true,
+    "urlCheck": false
+  },
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "weixin-cloud-admin-mp",
+  "miniprogramRoot": "./",
+  "cloudfunctionRoot": "cloudfunctions/"
+}

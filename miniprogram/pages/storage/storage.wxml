@@ -1,0 +1,83 @@
+<view class="page">
+    <!-- 环境条 -->
+    <view class="env-bar" bindtap="goEnvConfig">
+        <text class="small muted">环境</text>
+        <text class="env-name gap">{{envId || '未设置'}}</text>
+        <text class="tag gap">切换 ›</text>
+    </view>
+
+    <view wx:if="{{loading}}" class="state-card">
+        <view class="spinner"></view>
+        <view class="state-title">正在列举目录…</view>
+    </view>
+
+    <view wx:elif="{{error}}" class="state-card state-card-error">
+        <view class="state-title">加载失败</view>
+        <view class="state-desc">{{error}}</view>
+        <button class="btn-primary" size="mini" bindtap="load">重试</button>
+    </view>
+
+    <block wx:else>
+        <!-- 面包屑 -->
+        <view class="crumbs">
+            <block wx:for="{{crumbs}}" wx:key="path">
+                <text wx:if="{{index > 0}}" class="crumb-sep">/</text>
+                <text class="crumb {{item.path === path ? 'crumb-active' : ''}}"
+                      bindtap="crumbTap" data-path="{{item.path}}">{{item.label}}</text>
+            </block>
+        </view>
+
+        <!-- 工具栏 -->
+        <view class="card row-between">
+            <text class="small muted">当前目录：{{path || '（根目录）'}}</text>
+            <button class="btn-primary mini-btn" size="mini" bindtap="uploadFile" disabled="{{uploading}}">
+                {{uploading ? '上传中…' : '＋ 上传文件'}}
+            </button>
+        </view>
+
+        <!-- 子目录 -->
+        <view class="card">
+            <text class="card-title">子目录（{{dirs.length}}）</text>
+            <view class="dir-list" wx:if="{{dirs.length}}">
+                <view wx:for="{{dirs}}" wx:key="*this" class="dir-item" bindtap="enterDir" data-path="{{item}}">
+                    <text class="dir-icon">📁</text>
+                    <text class="dir-name">{{item}}</text>
+                    <text class="muted small">›</text>
+                </view>
+            </view>
+            <view wx:else class="state-desc mt">当前目录没有子目录。</view>
+        </view>
+
+        <!-- 文件列表 -->
+        <view class="card">
+            <view class="row-between">
+                <text class="card-title">文件（{{files.length}}）</text>
+                <text class="small muted" wx:if="{{!files.length && !dirs.length}}">空目录</text>
+            </view>
+            <view wx:if="{{files.length}}" class="table">
+                <view wx:for="{{files}}" wx:key="full" class="file-row">
+                    <view class="col-1" bindtap="previewFile" data-full="{{item.full}}">
+                        <text class="file-name {{item.isImg ? 'img-name' : ''}}">{{item.name}}</text>
+                        <text class="small muted">{{item.sizeText}}<text wx:if="{{item.mtime}}"> · {{item.mtime}}</text></text>
+                    </view>
+                    <view class="file-ops">
+                        <button class="btn-ghost mini-btn" size="mini" wx:if="{{item.isImg}}"
+                                bindtap="previewFile" data-full="{{item.full}}"
+                                disabled="{{previewing === item.full}}">
+                            {{previewing === item.full ? '获取中' : '预览'}}
+                        </button>
+                        <button class="btn-danger mini-btn" size="mini"
+                                bindtap="deleteFile" data-full="{{item.full}}" data-name="{{item.name}}"
+                                disabled="{{deleting.indexOf(item.full) >= 0}}">
+                            {{deleting.indexOf(item.full) >= 0 ? '删除中' : '删除'}}
+                        </button>
+                    </view>
+                </view>
+            </view>
+        </view>
+
+        <view class="card-desc" style="padding: 0 12rpx;">
+            删除与预览基于临时签名链接（2 小时有效）。上传走 base64，单文件上限 20MB。
+        </view>
+    </block>
+</view>

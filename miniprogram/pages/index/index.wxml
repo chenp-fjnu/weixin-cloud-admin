@@ -1,0 +1,76 @@
+<view class="page">
+    <!-- 环境切换条 -->
+    <view class="env-bar" bindtap="goEnvConfig">
+        <view class="row">
+            <text class="muted small">当前环境</text>
+            <text class="env-name gap">{{envId || '未设置'}}</text>
+        </view>
+        <text class="tag">切换 ›</text>
+    </view>
+
+    <!-- 加载中 -->
+    <view wx:if="{{loading}}" class="state-card">
+        <view class="spinner"></view>
+        <view class="state-title">正在加载概览</view>
+        <view class="state-desc">正在统计集合文档数与云存储占用…</view>
+    </view>
+
+    <!-- 错误 -->
+    <view wx:elif="{{error}}" class="state-card state-card-error">
+        <view class="state-title">加载失败</view>
+        <view class="state-desc">{{error}}</view>
+    </view>
+
+    <!-- 内容 -->
+    <block wx:else>
+        <!-- 概览统计 -->
+        <view class="card">
+            <view class="row-between">
+                <text class="card-title">概览</text>
+                <text class="tag">{{envId}}</text>
+            </view>
+            <view class="stat-grid mt">
+                <view wx:for="{{statItems}}" wx:key="label" class="stat-cell">
+                    <view class="stat-num">{{item.num}}</view>
+                    <view class="stat-label">{{item.label}}</view>
+                </view>
+            </view>
+            <view wx:if="{{storageTruncated}}" class="card-desc mt">
+                文件数达到 5000 上限，统计为截断值。
+            </view>
+            <view wx:if="{{storageError}}" class="card-desc mt" style="color:#d4380d;">
+                云存储统计失败：{{storageError}}
+            </view>
+        </view>
+
+        <!-- 各集合文档数 -->
+        <view class="card">
+            <text class="card-title">集合文档数</text>
+            <view wx:if="{{!collectionsArr.length}}" class="state-desc mt">当前环境暂无集合。</view>
+            <view class="table mt" wx:else>
+                <view wx:for="{{collectionsArr}}" wx:key="name" class="table-row" bindtap="openCollection" data-name="{{item.name}}">
+                    <text class="col-1">{{item.name}}</text>
+                    <text class="col-2">{{item.countText}}</text>
+                </view>
+            </view>
+        </view>
+
+        <!-- 环境凭证状态 -->
+        <view class="card">
+            <view class="row-between">
+                <text class="card-title">环境凭证状态</text>
+                <button class="btn-ghost mini-btn" size="mini" bindtap="goEnvConfig">管理环境</button>
+            </view>
+            <view wx:if="{{!statusList.length}}" class="state-desc mt">云函数未配置任何云环境。</view>
+            <view class="table mt" wx:else>
+                <view wx:for="{{statusList}}" wx:key="envId" class="table-row">
+                    <text class="col-1">{{item.envId}}</text>
+                    <text class="tag {{item.tagClass}}">{{item.tagText}}</text>
+                </view>
+            </view>
+            <view class="card-desc mt">
+                凭证配置在云函数环境变量中，小程序端不可见。新增环境请修改环境变量后重新部署。
+            </view>
+        </view>
+    </block>
+</view>

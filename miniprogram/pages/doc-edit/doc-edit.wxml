@@ -1,0 +1,54 @@
+<view class="page">
+    <!-- 头部：集合 / _id -->
+    <view class="env-bar">
+        <view class="row">
+            <text class="muted small">集合</text>
+            <text class="env-name gap">{{collection}}</text>
+        </view>
+        <text class="tag">{{mode === 'edit' ? '编辑' : '新增'}}</text>
+    </view>
+    <view class="env-bar" wx:if="{{mode === 'edit'}}">
+        <text class="muted small">_id</text>
+        <text class="env-name gap" style="font-family:monospace;">{{id}}</text>
+    </view>
+
+    <view wx:if="{{loading}}" class="state-card">
+        <view class="spinner"></view>
+        <view class="state-title">读取文档中…</view>
+    </view>
+
+    <view wx:elif="{{error}}" class="state-card state-card-error">
+        <view class="state-title">无法加载</view>
+        <view class="state-desc">{{error}}</view>
+        <button class="btn-primary" size="mini" bindtap="goBack">返回</button>
+    </view>
+
+    <block wx:else>
+        <view class="card">
+            <text class="card-title">文档内容（JSON）</text>
+            <textarea
+                class="textarea mt"
+                value="{{text}}"
+                placeholder="在此编辑 JSON，保存时会校验格式"
+                bindinput="onTextInput"
+                maxlength="-1"
+                auto-height
+                show-confirm-bar="{{false}}"
+                cursor-spacing="24"
+            ></textarea>
+            <view class="row-between mt">
+                <button class="btn-danger" size="mini" bindtap="onDelete"
+                        wx:if="{{mode === 'edit'}}" disabled="{{removing}}">
+                    {{removing ? '删除中…' : '删除该文档'}}
+                </button>
+                <view></view>
+                <button class="btn-primary" size="mini" bindtap="onSave" disabled="{{saving}}">
+                    {{saving ? '保存中…' : (mode === 'edit' ? '保存修改' : '新增文档')}}
+                </button>
+            </view>
+            <view class="card-desc mt" wx:if="{{mode === 'edit'}}">
+                保存为整包替换（set）：未包含的字段将被移除。
+            </view>
+        </view>
+    </block>
+</view>
