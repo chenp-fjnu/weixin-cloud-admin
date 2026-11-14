@@ -22,6 +22,7 @@
     <div class="navitem active" data-tab="overview" role="tab" aria-selected="true" title="概览（快捷键 1）"><span class="ni" data-ic="grid"></span><span class="txt">概览</span><span class="kbd">1</span></div>
     <div class="navitem" data-tab="db" role="tab" aria-selected="false" title="云数据库（快捷键 2）"><span class="ni" data-ic="db"></span><span class="txt">云数据库</span><span class="kbd">2</span></div>
     <div class="navitem" data-tab="storage" role="tab" aria-selected="false" title="云存储（快捷键 3）"><span class="ni" data-ic="folder"></span><span class="txt">云存储</span><span class="kbd">3</span></div>
+    <div class="navitem" data-tab="settings" role="tab" aria-selected="false" title="环境配置（快捷键 4）"><span class="ni" data-ic="sliders"></span><span class="txt">环境配置</span><span class="kbd">4</span></div>
     <div class="sidebar-foot">
       <div class="envctl">
         <div class="lbl"><span class="ei" data-ic="cloud"></span>云环境</div>
@@ -165,6 +166,23 @@
           <div class="userlist" id="stUserList"></div>
         </div>
       </section>
+
+      <!-- ================= 环境配置 ================= -->
+      <section class="section" id="sec-settings" role="tabpanel">
+        <div class="pagehead">
+          <div>
+            <h2>环境配置</h2>
+            <div class="sub">云环境 + 腾讯云凭证管理 · <span id="cfgCount">-</span> · 保存后即时生效，重启不丢失</div>
+          </div>
+          <div class="acts">
+            <button class="btn pri sm" id="envAdd"></button>
+          </div>
+        </div>
+        <div class="banner" id="cfgBanner"></div>
+        <div id="cfgLoading" class="empty" style="padding:36px 20px"><span class="spin"></span> 正在读取环境列表…</div>
+        <div id="envRows" class="envrows" style="display:none"></div>
+        <p class="hint">* 凭证仅保存在本机 <code>config/environments.json</code>（该目录已加入 .gitignore），永不下发到浏览器；列表中只显示脱敏后的 SecretId，SecretKey 不可查看、只能重填。环境 ID 在<a href="https://console.cloud.tencent.com/tcb" target="_blank" rel="noopener">云开发控制台</a>获取，密钥在<a href="https://console.cloud.tencent.com/api/v3/secret-key" target="_blank" rel="noopener">腾讯云控制台 → API 密钥管理</a>获取。</p>
+      </section>
     </div>
   </main>
 </div>
@@ -198,12 +216,42 @@
   </div>
 </div>
 
+<!-- 环境 新增/编辑 -->
+<div class="mask" id="envModal">
+  <div class="modal narrow">
+    <div class="mh"><h3 id="envModalTitle">新增环境</h3><button class="btn sm ghost" data-close="envModal">✕</button></div>
+    <div class="mb">
+      <label class="fld"><span>云环境 ID</span>
+        <input type="text" id="envModalId" class="mono" placeholder="如 cloud1-xxxxxxxxxxxx" autocomplete="off" />
+        <span class="fdesc" id="envModalIdHint">云开发控制台 → 概览页的「环境 ID」</span>
+      </label>
+      <label class="fld"><span>Tencent Cloud SecretId</span>
+        <input type="text" id="envModalSid" class="mono" placeholder="AKID 开头" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="fld"><span>Tencent Cloud SecretKey</span>
+        <input type="password" id="envModalSkey" class="mono" placeholder="与 SecretId 配套" autocomplete="off" spellcheck="false" />
+      </label>
+      <label class="fld" id="envMakeDefaultWrap">
+        <span class="chk"><input type="checkbox" id="envMakeDefault" /> 保存后设为默认环境（顶栏下拉选中项）</span>
+      </label>
+      <div class="envmsg" id="envModalMsg"></div>
+    </div>
+    <div class="mf">
+      <button class="btn sm" id="envModalTest" title="用表单中的凭证发起一次轻量调用验证">测试连通性</button>
+      <span class="mf-spacer"></span>
+      <button class="btn sm" data-close="envModal">取消</button>
+      <button class="btn pri" id="envModalSave">保存</button>
+    </div>
+  </div>
+</div>
+
 <div id="toasts"></div>
 <!-- 前端零依赖：按依赖顺序引入（common → 各 Tab 模块 → 启动），无构建步骤 -->
 <script src="./js/common.js"></script>
 <script src="./js/overview.js"></script>
 <script src="./js/db.js"></script>
 <script src="./js/storage.js"></script>
+<script src="./js/settings.js"></script>
 <script src="./js/main.js"></script>
 </body>
 </html>

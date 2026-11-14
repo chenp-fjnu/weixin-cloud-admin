@@ -7,7 +7,8 @@
 const PAGE_META = {
   overview: { t: '概览', s: '云开发环境数据总览 · 数据库 + 云存储' },
   db: { t: '云数据库', s: '集合浏览 · 文档查看 / 编辑 / 删除' },
-  storage: { t: '云存储', s: '目录浏览 · 预览 · 上传 · 批量管理' }
+  storage: { t: '云存储', s: '目录浏览 · 预览 · 上传 · 批量管理' },
+  settings: { t: '环境配置', s: '云环境 + 腾讯云凭证管理 · 保存即时生效' }
 };
 function setNav(name) {
   $$('.navitem').forEach(t => {
@@ -29,6 +30,7 @@ function switchTab(name) {
   if (name === 'db') initDb();
   // 15 秒内重复进入存储 Tab 不重复拉列表（数据新鲜度由 loadedAt 判定）
   if (name === 'storage' && (!S.st.loadedAt || Date.now() - S.st.loadedAt > 15000)) loadStorage();
+  if (name === 'settings') loadEnvironments();
 }
 
 // ---------- 连接状态 & 环境切换 ----------
@@ -81,8 +83,8 @@ function initEnvSelect(envsStatus, defaultEnv) {
   if (changed) toast('当前环境：' + cur, 'ok');
 }
 
-async function switchEnv(envId) {
-  if (!envId || envId === S.env) return;
+async function switchEnv(envId, force) {
+  if (!envId || (envId === S.env && !force)) return;
   S.env = envId;
   try { localStorage.setItem(ENV_LS_KEY, envId); } catch (e) { /* ignore */ }
   closeModals(true);
@@ -119,12 +121,12 @@ function labelBtn(id, icon, text) {
 function bindEvents() {
   // 侧边导航切换
   $$('.navitem').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
-  // 快捷键 1/2/3 切换 Tab（输入框聚焦时不触发）
+  // 快捷键 1/2/3/4 切换 Tab（输入框聚焦时不触发）
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = (document.activeElement || {}).tagName || '';
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    const map = { '1': 'overview', '2': 'db', '3': 'storage' };
+    const map = { '1': 'overview', '2': 'db', '3': 'storage', '4': 'settings' };
     if (map[e.key]) switchTab(map[e.key]);
   });
 
@@ -229,6 +231,15 @@ function bindEvents() {
   $('#stFilter').addEventListener('input', function () { S.st.filter = this.value; renderStorage(); });
   $('#stSort').addEventListener('change', function () { S.st.sort = this.value; renderStorage(); });
 
+  // 环境配置
+  $('#envAdd').addEventListener('click', () => openEnvModal(''));
+  $('#envModalSave').addEventListener('click', saveEnvModal);
+  $('#envModalTest').addEventListener('click', testEnvModal);
+  ['envModalId', 'envModalSid', 'envModalSkey'].forEach(id => {
+    const el = $('#' + id);
+    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter' && id !== 'envModalId') saveEnvModal(); });
+  });
+
   // 拖拽上传：支持多文件，逐个确认并串行上传
   const stSec = $('#sec-storage');
   let _dragDepth = 0;
@@ -283,6 +294,8 @@ document.addEventListener('DOMContentLoaded', function () {
   labelBtn('stScan', 'scan', '扫描子目录');
   labelBtn('stSelAll', 'check', '全选本页');
   labelBtn('stUnselAll', 'x', '取消全选');
+  labelBtn('envAdd', 'plus', '新增环境');
+  $('#envModalSave').innerHTML = ic('check') + ' 保存';
   // 存储视图模式：从 localStorage 恢复（默认网格）
   let _sv = 'grid';
   try { _sv = localStorage.getItem(ST_VIEW_KEY) || 'grid'; } catch (e) { /* ignore */ }

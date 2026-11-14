@@ -4,7 +4,8 @@
 
 - **云数据库**：所有集合的文档（浏览 / 搜索 / 排序 / 新增 / 编辑 / 删除）
 - **云存储**：根目录下的全部文件（目录浏览 / 图片预览 / 上传 / 删除 / 临时链接）
-- **多环境切换**：顶栏下拉框切换不同云环境，默认环境由 `TCB_ENV_ID` 指定
+- **多环境切换**：顶栏下拉框切换不同云环境，默认环境可随时变更
+- **环境配置页**：在页面内直接新增 / 编辑 / 删除云环境及其腾讯云凭证，保存即时生效、重启不丢失（持久化到 `config/environments.json`），并支持一键测试凭证连通性
 
 > 这是一个与具体业务应用无关的通用运维工具：只要持有目标云环境的腾讯云 API 凭证，即可管理该环境内的数据库与云存储。
 
@@ -15,6 +16,7 @@
 | 概览 | 各集合文档数统计、云存储顶层目录数 / 总文件数 / 总大小、子目录聚合视图 |
 | 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除） |
 | 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效） |
+| 环境配置 | 新增 / 编辑 / 删除云环境与凭证、设默认、测试凭证连通性；列表仅显示脱敏 SecretId |
 
 ## 技术栈
 
@@ -31,16 +33,19 @@
 ```
 .
 ├── server.js          # 本地管理服务器（全部 API + 静态资源服务）
+├── config/
+│   └── environments.json  # 环境+凭证持久化（页面「环境配置」自动写入，已被 .gitignore 忽略）
 ├── public/
-│   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 三个 Tab）
+│   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 / 环境配置 四个 Tab）
 │   ├── styles.css     # 全局样式
 │   └── js/            # 前端逻辑（零依赖原生 JS，无构建）
 │       ├── common.js      # 工具 + 统一 API 请求 + 全局状态
 │       ├── overview.js    # 概览 Tab
 │       ├── db.js          # 云数据库 Tab + 文档模态框
 │       ├── storage.js     # 云存储 Tab
+│       ├── settings.js    # 环境配置 Tab
 │       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动
-├── .env.example       # 配置模板
+├── .env.example       # 配置模板（仅用于首次启动播种，之后以 config/environments.json 为准）
 ├── .env               # 真实配置（已被 .gitignore 忽略，勿提交）
 └── package.json
 ```
@@ -55,22 +60,21 @@ npm install
 
 ### 2. 配置凭证
 
+**推荐方式：页面内配置（无需重启）**
+
+直接启动后，打开左侧「环境配置」页 → 点「新增环境」→ 填环境 ID + SecretId + SecretKey → 保存。保存即时生效并持久化到 `config/environments.json`。
+
+**兼容方式：.env 播种（首次启动生效）**
+
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env`，填入你的云环境 ID 与腾讯云 API 凭证（须为能访问目标云环境的账号）：
-
-```ini
-TCB_ENV_ID=<你的云环境 ID>
-TCB_SECRET_ID=你的 SecretId
-TCB_SECRET_KEY=你的 SecretKey
-```
-
-> - 云环境 ID 在 [云开发控制台](https://console.cloud.tencent.com/tcb) 获取
+编辑 `.env`，填入你的云环境 ID 与腾讯云 API 凭证（须为能访问目标云环境的账号）。
+> - 首次启动时，服务会把 `.env` 中的环境列表播种到 `config/environments.json`；此后以该文件为准，改 `.env` 需删除 `config/environments.json` 后重启才会重新播种。
+> - 环境 ID 在 [云开发控制台](https://console.cloud.tencent.com/tcb) 获取
 > - SecretId / SecretKey 在 [腾讯云控制台 → API 密钥管理](https://console.cloud.tencent.com/api/v3/secret-key) 获取
-> - `TCB_ENV_ID` 为必填项，未配置时服务启动会直接报错退出
-> - `.env` 已被 `.gitignore` 忽略，**切勿提交真实密钥**
+> - `config/` 与 `.env` 均已被 `.gitignore` 忽略，**切勿提交真实密钥**
 
 ### 3. 启动
 
@@ -91,30 +95,21 @@ npm start
 ==========================================================
 ```
 
-## 配置项（`.env`）
+## 配置项
 
-| 变量 | 必填 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `TCB_ENV_ID` | **是** | — | 默认云环境 ID |
-| `TCB_ENV_IDS` | 否 | 仅含 `TCB_ENV_ID` | 可切换环境列表（逗号分隔），前端顶栏下拉切换 |
-| `TCB_SECRET_ID` | **是** | — | 腾讯云 SecretId（第 1 个环境） |
-| `TCB_SECRET_KEY` | **是** | — | 腾讯云 SecretKey（第 1 个环境） |
-| `TCB_SECRET_ID_N` / `TCB_SECRET_KEY_N` | 否 | 回落默认凭证 | 第 N 个环境的独立凭证（跨账号场景，N 为 `TCB_ENV_IDS` 中的位置序号，如第 2 个环境用 `_2`） |
-| `KNOWN_COLLECTIONS` | 否 | 内置示例名单 | 兜底集合名单（逗号分隔），仅在 `listCollections` 接口失败时生效 |
-| `ADMIN_PORT` | 否 | `8787` | 服务端口 |
-| `ADMIN_HOST` | 否 | `127.0.0.1` | 绑定地址，**务必保持本机回环，不对外暴露** |
-| `ADMIN_TOKEN` | 否 | — | 设置后所有 `/api` 请求须携带请求头 `x-admin-token: <值>` |
-| `ADMIN_UPLOAD_LIMIT` | 否 | `20971520`（20MB） | 单文件上传上限（字节） |
+环境（环境 ID + 凭证）由**页面「环境配置」页**管理，持久化在 `config/environments.json`。`.env` 仅在首次启动（无 `config/environments.json`）时作为播种来源。
 
-**多环境示例**（两个环境分属不同账号）：
-
-```ini
-TCB_ENV_IDS=<环境A>,<环境B>
-TCB_SECRET_ID=<环境A账号 SecretId>
-TCB_SECRET_KEY=<环境A账号 SecretKey>
-TCB_SECRET_ID_2=<环境B账号 SecretId>
-TCB_SECRET_KEY_2=<环境B账号 SecretKey>
-```
+| 来源 | 变量 | 说明 |
+| --- | --- | --- |
+| `.env`（首次播种） | `TCB_ENV_ID` | 默认云环境 ID |
+| `.env`（首次播种） | `TCB_ENV_IDS` | 可切换环境列表（逗号分隔） |
+| `.env`（首次播种） | `TCB_SECRET_ID` / `TCB_SECRET_KEY` | 第 1 个环境的腾讯云凭证 |
+| `.env`（首次播种） | `TCB_SECRET_ID_N` / `TCB_SECRET_KEY_N` | 第 N 个环境的独立凭证（跨账号场景） |
+| `.env` | `KNOWN_COLLECTIONS` | 兜底集合名单（`listCollections` 失败时生效，逗号分隔） |
+| `.env` | `ADMIN_PORT` | 服务端口（默认 `8787`） |
+| `.env` | `ADMIN_HOST` | 绑定地址（默认 `127.0.0.1`，**务必保持本机回环**） |
+| `.env` | `ADMIN_TOKEN` | 设置后所有 `/api` 请求须带 `x-admin-token: <值>` 请求头 |
+| `.env` | `ADMIN_UPLOAD_LIMIT` | 单文件上传上限（字节，默认 20MB） |
 
 ## API 一览
 
@@ -123,12 +118,18 @@ TCB_SECRET_KEY_2=<环境B账号 SecretKey>
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/status` | 各环境凭证与 SDK 就绪状态 |
+| GET | `/api/environments` | 环境列表（仅脱敏 SecretId + 是否已配置凭证，不下发明文密钥） |
+| POST | `/api/environments` | 新增环境（body: `{ envId, secretId, secretKey, makeDefault? }`） |
+| PUT | `/api/environments` | 编辑环境（body: `{ curEnvId, envId?, secretId?, secretKey?, makeDefault? }`，密钥留空 = 不变） |
+| DELETE | `/api/environments?env=` | 删除环境（删除默认环境时自动改选其余第一个） |
+| PUT | `/api/environments/default` | 设置默认环境（body: `{ envId }`） |
+| POST | `/api/environments/test` | 测试凭证连通性（body: `{ envId, secretId?, secretKey? }`，密钥缺省时用已保存凭证） |
 | GET | `/api/overview` | 概览：各集合文档数 + 云存储统计 |
 | GET | `/api/collections` | 集合名列表 |
 | GET | `/api/collection?name=&page=&size=&sort=&sortDir=&field=&q=` | 文档分页查询（`q` 对 `field` 做不区分大小写正则匹配） |
 | GET | `/api/doc?name=&id=` | 读取单条文档 |
 | POST | `/api/collection?name=` | 新增文档（JSON body，不允许指定 `_id`） |
-| PUT | `/api/doc?name=&id=` | 更新文档（JSON body 部分更新） |
+| PUT | `/api/doc?name=&id=` | 更新文档（JSON body 整包替换） |
 | DELETE | `/api/doc?name=&id=` | 删除文档 |
 | GET | `/api/storage?prefix=&maxKeys=` | 列举某前缀下一级子目录与文件 |
 | GET | `/api/storage/urls?fileIDs=a,b,c` | 批量获取临时访问 URL（2 小时有效） |
@@ -145,14 +146,17 @@ TCB_SECRET_KEY_2=<环境B账号 SecretKey>
 
 ## 常见问题
 
-**Q: 服务启动即退出，提示「未配置 TCB_ENV_ID」？**
-在 `.env` 填入默认云环境 ID 后重启。
+**Q: 顶栏环境下拉里没有我想要的云环境？**
+打开左侧「环境配置」页 →「新增环境」，填入环境 ID 与该环境的腾讯云凭证即可，保存即时生效，无需重启。
 
 **Q: 页面显示「未配置凭证」？**
-在 `.env` 填入 `TCB_SECRET_ID` / `TCB_SECRET_KEY` 后重启服务。
+到「环境配置」页点该环境行的「编辑」，补全 SecretId / SecretKey 后保存（也可在模态框里先点「测试连通性」验证）。
+
+**Q: 换机器 / 想重置环境列表？**
+删除 `config/environments.json` 后重启服务，将重新用 `.env` 播种；或在「环境配置」页逐个删除后重建。
 
 **Q: 集合列表只看到几个内置示例集合？**
-这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请检查凭证账号是否有权限访问目标环境，或在 `.env` 中用 `KNOWN_COLLECTIONS` 配置你自己的集合名单。
+这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请到「环境配置」页点「测试」确认凭证能否访问该环境，或在 `.env` 中用 `KNOWN_COLLECTIONS` 配置你自己的集合名单。
 
 **Q: 图片预览失效？**
 临时 URL 有效期 2 小时，刷新页面重新获取即可。

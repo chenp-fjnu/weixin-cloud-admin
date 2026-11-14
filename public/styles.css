@@ -380,6 +380,30 @@ pre.hl,textarea.code ~ pre{font-family:var(--mono)}
 .banner svg{width:16px;height:16px;flex:0 0 16px;margin-top:2px}
 #sec-storage.drop{outline:2px dashed var(--brand);outline-offset:-10px;border-radius:var(--radius)}
 
+/* ============ 环境配置 ============ */
+.envrows{display:flex;flex-direction:column;gap:10px}
+.envrow{display:flex;align-items:center;gap:14px;padding:13px 16px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:var(--radius);transition:border-color .15s}
+.envrow:hover{border-color:var(--line2)}
+.envrow .er-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.envrow .er-id{font-size:13.5px;font-weight:600;word-break:break-all}
+.envrow .er-meta{font-size:12px;color:var(--ink2);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.envrow .er-ops{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex:0 0 auto}
+/* 模态框内表单字段 */
+.fld{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.fld > span:first-child{font-size:12.5px;font-weight:600;color:var(--ink2)}
+.fld input[type="text"],.fld input[type="password"]{width:100%}
+.fld .fdesc{font-size:11.5px;color:var(--ink3)}
+.fld .chk{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin:2px 0}
+.fld .chk input{accent-color:var(--brand);width:15px;height:15px}
+.modal.narrow{max-width:520px}
+.mf-spacer{flex:1}
+.envmsg{font-size:12.5px;margin-top:4px;min-height:0;line-height:1.5;word-break:break-all}
+.envmsg.ok{color:var(--ok)} .envmsg.err{color:var(--danger)} .envmsg.warn{color:var(--warn)}
+.banner.warn{background:var(--warn-bg);color:var(--warn)}
+code{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:5px;padding:1px 5px}
+
 /* ============ 响应式 ============ */
 @media(max-width:1080px){
   #sidebar{width:64px;flex-basis:64px;padding:14px 9px}
@@ -396,4 +420,6 @@ pre.hl,textarea.code ~ pre{font-family:var(--mono)}
   .cards{grid-template-columns:repeat(2,1fr)}
   td.val{max-width:160px}
   .filegrid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+  .envrow{flex-direction:column;align-items:stretch}
+  .envrow .er-ops{justify-content:flex-start}
 }

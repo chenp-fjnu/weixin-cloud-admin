@@ -27,6 +27,7 @@ const ICONS = {
   sun: '<circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/>',
   moon: '<path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/>',
   chevR: '<path d="M9 6l6 6-6 6"/>',
+  sliders: '<path d="M4 7h8.5M17.5 7H20M4 17h2.5M11 17H20"/><circle cx="15" cy="7" r="2.5"/><circle cx="8.5" cy="17" r="2.5"/>',
   list: '<path d="M9 6h12M9 12h12M9 18h12"/><path d="M4.2 6h.01M4.2 12h.01M4.2 18h.01"/>',
   file: '<path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3z"/><path d="M13.5 3v5.5H19"/>',
   fileText: '<path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3z"/><path d="M13.5 3v5.5H19"/><path d="M9 13h6M9 16.5h4"/>',

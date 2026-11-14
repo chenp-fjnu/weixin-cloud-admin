@@ -17,11 +17,16 @@
  *   - 腾讯云密钥（secretId/secretKey）只存在于本进程环境变量，永不下发到浏览器。
  *   - 浏览器 ↔ 本服务走同源 http，本服务再代去 CloudBase，前端零凭证。
  *
- * 凭证来源（优先级：process.env > .env 文件）：
- *   TCB_ENV_ID     默认云环境 ID（必填，云开发控制台获取）
- *   TCB_ENV_IDS    可选；逗号分隔的可切换环境列表（默认=仅 TCB_ENV_ID）
- *   TCB_SECRET_ID  腾讯云 SecretId（须能访问列表中所有云环境；不同环境若分属不同账号需自行保证）
- *   TCB_SECRET_KEY 腾讯云 SecretKey
+ * 环境与凭证来源（优先级：config/environments.json > .env 播种 > 页面「环境配置」随时增删改）：
+ *   - 首次启动且无 config/environments.json 时，用 .env 播种：
+ *       TCB_ENV_ID     默认云环境 ID
+ *       TCB_ENV_IDS    可切换的云环境列表（逗号分隔）
+ *       TCB_SECRET_ID / TCB_SECRET_KEY       第 1 个环境的腾讯云凭证
+ *       TCB_SECRET_ID_N / TCB_SECRET_KEY_N  第 N 个环境的独立凭证（跨账号场景）
+ *   - 之后以 config/environments.json 为准，页面「环境配置」页可增 / 删 / 改 / 测 / 设默认。
+ *   - config/ 与 .env 均不入 git（见 .gitignore）。
+ *
+ * 其它配置：
  *   ADMIN_PORT     端口（默认 8787）
  *   ADMIN_HOST     绑定地址（默认 127.0.0.1，务必保持；对外需自行加鉴权）
  *   ADMIN_TOKEN    可选；设置后所有 /api 请求需带请求头 x-admin-token 匹配
@@ -53,37 +58,73 @@ function loadDotEnv() {
 }
 loadDotEnv();
 
-// ============ 多环境注册表 ============
-// 默认环境 = TCB_ENV_ID（保持旧配置兼容）；TCB_ENV_IDS 提供可切换的完整列表。
-const DEFAULT_ENV_ID = (process.env.TCB_ENV_ID || '').trim();
-if (!DEFAULT_ENV_ID) {
-  console.error('启动失败：未配置 TCB_ENV_ID（默认云环境 ID 必填，参见 .env.example）');
-  process.exit(1);
-}
-const ENV_LIST = (process.env.TCB_ENV_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-if (!ENV_LIST.length || !ENV_LIST.includes(DEFAULT_ENV_ID)) ENV_LIST.unshift(DEFAULT_ENV_ID);
-const SECRET_ID = process.env.TCB_SECRET_ID || '';
-const SECRET_KEY = process.env.TCB_SECRET_KEY || '';
+// ============ 多环境注册表（可页面增删改，持久化到 config/environments.json） ============
+// 启动时：若存在 config/environments.json 则以其为准；否则用 .env（TCB_ENV_IDS /
+// TCB_SECRET_ID[_N]）播种初始列表并落盘。之后页面「环境配置」页的增删改全部写回该文件。
+const CONFIG_DIR = path.join(__dirname, 'config');
+const CONFIG_FILE = path.join(CONFIG_DIR, 'environments.json');
+const ENV_ID_RE = /^[a-zA-Z0-9_-]{2,64}$/;
+const _envs = { defaultId: '', list: [] }; // list: [{ envId, secretId, secretKey }]
+
 const PORT = parseInt(process.env.ADMIN_PORT || '8787', 10);
 const HOST = process.env.ADMIN_HOST || '127.0.0.1';
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
-// 每个环境可单独配置凭证（跨账号场景）：TCB_SECRET_ID_N / TCB_SECRET_KEY_N（N=环境在
-// TCB_ENV_IDS 中的位置序号，第 2 个环境即 TCB_SECRET_ID_2）；未配置时回落默认
-// TCB_SECRET_ID / TCB_SECRET_KEY。
-function secretsFor(envId) {
-  const idx = ENV_LIST.indexOf(envId);
-  if (idx > 0) {
-    const id = process.env['TCB_SECRET_ID_' + (idx + 1)] || '';
-    const key = process.env['TCB_SECRET_KEY_' + (idx + 1)] || '';
-    if (id && key) return { id, key };
+function envIndex(envId) { return _envs.list.findIndex(e => e.envId === envId); }
+function envById(envId) { const i = envIndex(envId); return i >= 0 ? _envs.list[i] : null; }
+function defaultEnvId() { return _envs.defaultId || (_envs.list.length ? _envs.list[0].envId : ''); }
+
+function persistConfig() {
+  try {
+    if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ version: 1, defaultEnvId: _envs.defaultId, envs: _envs.list }, null, 2));
+  } catch (e) { console.error('保存环境配置失败：' + (e.message || e)); }
+}
+
+// 首次启动且无 config 文件时，用 .env 播种（兼容旧配置）
+function seedFromEnv() {
+  const defId = (process.env.TCB_ENV_ID || '').trim();
+  let envIds = (process.env.TCB_ENV_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (defId && !envIds.includes(defId)) envIds.unshift(defId);
+  const baseId = process.env.TCB_SECRET_ID || '';
+  const baseKey = process.env.TCB_SECRET_KEY || '';
+  _envs.list = envIds.map((id, idx) => ({
+    envId: id,
+    secretId: (idx > 0 && process.env['TCB_SECRET_ID_' + (idx + 1)]) || baseId,
+    secretKey: (idx > 0 && process.env['TCB_SECRET_KEY_' + (idx + 1)]) || baseKey
+  }));
+  _envs.defaultId = defId || (_envs.list.length ? _envs.list[0].envId : '');
+  persistConfig();
+}
+
+function loadConfig() {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      _envs.list = Array.isArray(data.envs) ? data.envs : [];
+      _envs.defaultId = (data.defaultEnvId || '').trim();
+      if (_envs.list.length && !envById(_envs.defaultId)) _envs.defaultId = _envs.list[0].envId;
+      if (!_envs.list.length) _envs.defaultId = '';
+      return;
+    } catch (e) {
+      console.error('读取环境配置失败，回落到 .env 播种：' + (e.message || e));
+    }
   }
-  return { id: SECRET_ID, key: SECRET_KEY };
+  // 无有效 config：.env 有则播种；.env 也空则允许空列表启动（由页面添加）
+  if ((process.env.TCB_ENV_ID || '').trim() || (process.env.TCB_ENV_IDS || '').trim()) seedFromEnv();
+}
+loadConfig();
+
+function secretsFor(envId) {
+  const e = envById(envId);
+  return e ? { id: e.secretId || '', key: e.secretKey || '' } : { id: '', key: '' };
 }
 function hasSecrets(envId) {
   const s = secretsFor(envId);
   return !!(s.id && s.key);
 }
+// 凭证 / 环境变更时清除 SDK 客户端缓存，避免沿用旧密钥构造的实例
+function invalidateClient(envId) { if (envId && _clients.has(envId)) _clients.delete(envId); }
 
 // 兜底集合名单（listCollections 接口失败时使用）；可用 KNOWN_COLLECTIONS 环境变量覆盖（逗号分隔）
 const KNOWN_COLLECTIONS = (process.env.KNOWN_COLLECTIONS ||
@@ -97,11 +138,7 @@ const _clients = new Map(); // envId -> { tcb, manager }
 function assertSecrets(envId) {
   const s = secretsFor(envId);
   if (!s.id || !s.key) {
-    const idx = ENV_LIST.indexOf(envId);
-    const hint = idx > 0
-      ? '环境 ' + envId + ' 未配置独立凭证（.env 填 TCB_SECRET_ID_' + (idx + 1) + ' / TCB_SECRET_KEY_' + (idx + 1) + '），且默认 TCB_SECRET_ID / TCB_SECRET_KEY 也缺失'
-      : '未配置腾讯云凭证：请在 .env 填入 TCB_SECRET_ID 与 TCB_SECRET_KEY 后重启服务';
-    throw new AppError(hint, 'NO_SECRETS');
+    throw new AppError('环境 ' + envId + ' 未配置凭证：请打开左侧「环境配置」，填入该环境的腾讯云 SecretId / SecretKey', 'NO_SECRETS');
   }
   return s;
 }
@@ -133,9 +170,9 @@ function db(envId) { return getClient(envId).tcb.database(); }
 
 // 解析并校验本次请求的目标环境（缺省=默认环境；非法 env 直接 4xx 级报错）
 function resolveEnv(params) {
-  const id = (params.get('env') || '').trim() || DEFAULT_ENV_ID;
-  if (!ENV_LIST.includes(id)) {
-    throw new AppError('未知云环境：' + id + '（可选：' + ENV_LIST.join(' / ') + '）', 'BAD_ENV');
+  const id = (params.get('env') || '').trim() || defaultEnvId();
+  if (!id || !envById(id)) {
+    throw new AppError(_envs.list.length ? ('未知云环境：' + id + '（可选：' + _envs.list.map(e => e.envId).join(' / ') + '）') : '尚未配置云环境：请先到「环境配置」页添加', 'BAD_ENV');
   }
   return id;
 }
@@ -278,6 +315,13 @@ async function listCollectionNames(envId) {
 }
 
 // ============ HTTP 工具 ============
+// 凭证脱敏：只暴露前 6 位 + 后 4 位，中间以 … 代替
+function maskSecret(s) {
+  s = s || '';
+  if (!s) return '';
+  if (s.length <= 10) return s.slice(0, 2) + '…';
+  return s.slice(0, 6) + '…' + s.slice(-4);
+}
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, {
@@ -340,14 +384,115 @@ function serveStatic(req, res, pathname) {
 const handlers = {
   'GET /api/status': async (req, res, params) => {
     // 逐环境报告：hasSecrets（凭证齐备）+ ok（SDK 构造成功，不发起真实请求）
-    const envs = ENV_LIST.map(envId => {
+    const envs = _envs.list.map(e => {
+      const envId = e.envId;
       const credsOk = hasSecrets(envId);
       let ok = false, message = '';
-      if (credsOk) { try { getClient(envId); ok = true; } catch (e) { message = e.message; } }
+      if (credsOk) { try { getClient(envId); ok = true; } catch (err) { message = err.message; } }
       return { envId, hasSecrets: credsOk, ok, message };
     });
-    const def = envs.find(e => e.envId === DEFAULT_ENV_ID) || envs[0] || { envId: DEFAULT_ENV_ID, ok: false };
-    return sendJson(res, 200, { ok: !!def.ok, envId: DEFAULT_ENV_ID, envs: ENV_LIST, envsStatus: envs, hasSecrets: hasSecrets(DEFAULT_ENV_ID), host: HOST, port: PORT, message: def.message || '' });
+    const defId = defaultEnvId();
+    const def = envs.find(e => e.envId === defId) || envs[0] || { envId: defId, ok: false };
+    return sendJson(res, 200, { ok: !!def.ok, envId: defId, envs: _envs.list.map(e => e.envId), envsStatus: envs, hasSecrets: defId ? hasSecrets(defId) : false, host: HOST, port: PORT, message: def.message || '' });
+  },
+
+  // ---------- 环境配置（页面可增删改云环境与凭证） ----------
+  'GET /api/environments': async (req, res, params) => {
+    // 只下发脱敏信息：SecretId 前 6 后 4，SecretKey 仅报「是否已配置」
+    return sendJson(res, 200, {
+      defaultEnvId: defaultEnvId(),
+      envs: _envs.list.map(e => ({
+        envId: e.envId,
+        isDefault: e.envId === defaultEnvId(),
+        hasSecrets: !!(e.secretId && e.secretKey),
+        secretIdMasked: maskSecret(e.secretId),
+        secretKeySet: !!e.secretKey
+      }))
+    });
+  },
+
+  'POST /api/environments': async (req, res, params) => {
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const envId = String((body && body.envId) || '').trim();
+    if (!ENV_ID_RE.test(envId)) return sendError(res, 400, '环境 ID 非法（2-64 位字母 / 数字 / _ / -）');
+    if (envById(envId)) return sendError(res, 409, '环境已存在：' + envId);
+    const secretId = String((body && body.secretId) || '').trim();
+    const secretKey = String((body && body.secretKey) || '').trim();
+    if (!secretId || !secretKey) return sendError(res, 400, '请填入 SecretId 与 SecretKey');
+    _envs.list.push({ envId, secretId, secretKey });
+    if (!_envs.defaultId || (body && body.makeDefault)) _envs.defaultId = envId;
+    persistConfig();
+    return sendJson(res, 200, { ok: true, envId, defaultEnvId: defaultEnvId() });
+  },
+
+  'PUT /api/environments': async (req, res, params) => {
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const cur = envById(String((body && body.curEnvId) || '').trim());
+    if (!cur) return sendError(res, 404, '环境不存在');
+    const newId = String((body && body.envId) || '').trim();
+    if (newId && newId !== cur.envId) {
+      if (!ENV_ID_RE.test(newId)) return sendError(res, 400, '新环境 ID 非法（2-64 位字母 / 数字 / _ / -）');
+      if (envById(newId)) return sendError(res, 409, '环境 ID 已存在：' + newId);
+      invalidateClient(cur.envId);
+      cur.envId = newId;
+      if (_envs.defaultId === cur.envId) _envs.defaultId = newId;
+    }
+    // 空字符串视为「保持不变」（页面不回显密钥明文，留空 = 不改该项）
+    const nid = typeof body.secretId === 'string' ? body.secretId.trim() : null;
+    const nk = typeof body.secretKey === 'string' ? body.secretKey.trim() : null;
+    if (nid) cur.secretId = nid;
+    if (nk) cur.secretKey = nk;
+    if (body.makeDefault) _envs.defaultId = cur.envId;
+    invalidateClient(newId || cur.envId);
+    persistConfig();
+    return sendJson(res, 200, { ok: true, envId: cur.envId, defaultEnvId: defaultEnvId() });
+  },
+
+  'DELETE /api/environments': async (req, res, params) => {
+    const envId = (params.get('env') || '').trim();
+    if (!envId) return sendError(res, 400, '缺少 env 参数');
+    if (!envById(envId)) return sendError(res, 404, '环境不存在：' + envId);
+    _envs.list.splice(envIndex(envId), 1);
+    invalidateClient(envId);
+    if (_envs.defaultId === envId) _envs.defaultId = _envs.list.length ? _envs.list[0].envId : '';
+    persistConfig();
+    return sendJson(res, 200, { ok: true, defaultEnvId: defaultEnvId() });
+  },
+
+  'PUT /api/environments/default': async (req, res, params) => {
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const envId = String((body && body.envId) || '').trim();
+    if (!envById(envId)) return sendError(res, 404, '环境不存在：' + envId);
+    _envs.defaultId = envId;
+    persistConfig();
+    return sendJson(res, 200, { ok: true, defaultEnvId: envId });
+  },
+
+  'POST /api/environments/test': async (req, res, params) => {
+    // 用表单里的凭证（未保存也可测）发起一次轻量 OpenAPI 调用验证有效性
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const envId = String((body && body.envId) || '').trim();
+    let sid = String((body && body.secretId) || '').trim();
+    let skey = String((body && body.secretKey) || '').trim();
+    if (!ENV_ID_RE.test(envId)) return sendError(res, 400, '环境 ID 非法');
+    if ((!sid || !skey)) {
+      // 表单未填（或行内「测试」按钮）：回落用已保存的凭证
+      const saved = envById(envId);
+      if (saved && saved.secretId && saved.secretKey) { sid = saved.secretId; skey = saved.secretKey; }
+    }
+    if (!sid || !skey) return sendError(res, 400, '该环境尚无已保存凭证：请先填入 SecretId / SecretKey');
+    try {
+      const M = requireSdk('@cloudbase/manager-node');
+      const Ctor = M.default || M;
+      const m = new Ctor({ secretId: sid, secretKey: skey, envId: envId });
+      const r = await m.database.listCollections({ MgoLimit: 1 });
+      const n = (r && (r.Collections || r.collections)) || [];
+      return sendJson(res, 200, { ok: true, message: '凭证有效，可访问环境（集合 ' + (Array.isArray(n) ? n.length : 0) + ' 个起）' });
+    } catch (e) {
+      const msg = (e && e.message) || String(e);
+      const isAuth = /auth|credential|secret|denied|unauthorized|AccessDenied|SignatureFailure|InvalidToken/i.test(msg);
+      return sendJson(res, 200, { ok: !isAuth, message: isAuth ? ('凭证校验失败：' + msg) : ('凭证可用（调用提示：' + msg + '）') });
+    }
   },
 
   'GET /api/overview': async (req, res, params) => {
@@ -553,11 +698,12 @@ const server = http.createServer(async (req, res) => {
 }
 
 server.listen(PORT, HOST, () => {
-  const has = !!(SECRET_ID && SECRET_KEY);
+  const anySecret = _envs.list.some(e => hasSecrets(e.envId));
   console.log('==========================================================');
   console.log('  云端数据管理台（多环境）');
   console.log('  本地访问: http://' + HOST + ':' + PORT + '/');
-  console.log('  云环境 : ' + ENV_LIST.join('  |  ') + '（默认 ' + DEFAULT_ENV_ID + '）');
-  console.log('  凭证   : ' + (has ? '已配置' : '未配置（请在 .env 填入 TCB_SECRET_ID / TCB_SECRET_KEY）'));
+  console.log('  云环境 : ' + (_envs.list.map(e => e.envId).join('  |  ') || '（尚未配置，请到「环境配置」页添加）')
+    + (_envs.list.length ? '（默认 ' + defaultEnvId() + '）' : ''));
+  console.log('  凭证   : ' + (anySecret ? '已配置' : '未配置（请在「环境配置」页填入）'));
   console.log('==========================================================');
 });
