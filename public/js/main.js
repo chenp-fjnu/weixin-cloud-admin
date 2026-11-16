@@ -4,16 +4,18 @@
 
 import { $, $$, S, apiGet, apiPost, toast, ic, initIcons, applyTheme, toggleTheme, THEME_LS_KEY, ENV_LS_KEY, copyText } from './common.js';
 import { loadOverview } from './overview.js';
-import { initDb, resetDb, dbSkeletonRows, loadDb, openDoc, closeModals, setDocMode, saveDoc, fmtDocBtn, updateDirty, docDirty } from './db.js';
+import { initDb, resetDb, dbSkeletonRows, loadDb, openDoc, closeModals, setDocMode, saveDoc, fmtDocBtn, updateDirty, docDirty, toggleDbMeta, dbMetaFollow } from './db.js';
 import { loadStorage, renderStorage, resetStorage, hideBatchBar, clearSel, selectAllPage, deleteSelected, scanDirs, setStView, setStSort, resetDeleteBtn, uploadOneFile, uploadToCurrent, ST_VIEW_KEY } from './storage.js';
 import { loadEnvironments, openEnvModal, saveEnvModal, testEnvModal } from './settings.js';
+import { initFunctions, resetFunctions, loadFunctions } from './functions.js';
 
 // ---------- 顶部标题 ----------
 const PAGE_META = {
   overview: { t: '概览', s: '云开发环境数据总览 · 数据库 + 云存储' },
   db: { t: '云数据库', s: '集合浏览 · 文档查看 / 编辑 / 删除' },
   storage: { t: '云存储', s: '目录浏览 · 预览 · 上传 · 批量管理' },
-  settings: { t: '环境配置', s: '云环境 + 腾讯云凭证管理 · 保存即时生效' }
+  settings: { t: '环境配置', s: '云环境 + 腾讯云凭证管理 · 保存即时生效' },
+  functions: { t: '云函数', s: '列表 · 配置 · 调用 · 触发器 · 删除' }
 };
 function setNav(name) {
   $$('.navitem').forEach(t => {
@@ -36,6 +38,7 @@ function switchTab(name) {
   // 15 秒内重复进入存储 Tab 不重复拉列表（数据新鲜度由 loadedAt 判定）
   if (name === 'storage' && (!S.st.loadedAt || Date.now() - S.st.loadedAt > 15000)) loadStorage();
   if (name === 'settings') loadEnvironments();
+  if (name === 'functions') initFunctions();
 }
 
 // ---------- 连接状态 & 环境切换 ----------
@@ -120,6 +123,7 @@ async function switchEnv(envId, force) {
   if (fieldEl) fieldEl.value = '';
   if (sortDirEl) sortDirEl.value = 'desc';
   resetStorage(); // 复位 stSel / S.st / 在途缩略图序号 / URL 缓存
+  resetFunctions(); // 复位云函数 Tab 状态（在途请求序号 / 选中函数）
   const flt = $('#stFilter'), srt = $('#stSort');
   if (flt) flt.value = '';
   if (srt) srt.value = 'name';
@@ -131,6 +135,7 @@ async function switchEnv(envId, force) {
   if (tab === 'overview') loadOverview();
   if (tab === 'db') initDb();
   if (tab === 'storage') loadStorage();
+  if (tab === 'functions') initFunctions();
   toast('已切换到环境 ' + envId, 'ok');
 }
 
@@ -149,7 +154,7 @@ function bindEvents() {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = (document.activeElement || {}).tagName || '';
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    const map = { '1': 'overview', '2': 'db', '3': 'storage', '4': 'settings' };
+    const map = { '1': 'overview', '2': 'db', '3': 'storage', '4': 'settings', '5': 'functions' };
     if (map[e.key]) switchTab(map[e.key]);
   });
 
@@ -174,7 +179,9 @@ function bindEvents() {
     S.db.fieldsSet = null; S.db.q = ''; S.db.field = ''; S.db.sort = ''; S.db.sortDir = 'desc';
     $('#dbQuery').value = ''; $('#dbSort').value = ''; $('#dbSortDir').value = 'desc';
     loadDb();
+    dbMetaFollow(); // 索引/权限面板打开时跟随新集合刷新
   });
+  $('#dbMetaBtn').addEventListener('click', toggleDbMeta);
   $('#dbSize').addEventListener('change', function () {
     S.db.size = +this.value; S.db.page = 1; loadDb();
   });
@@ -256,6 +263,9 @@ function bindEvents() {
   $('#stFilter').addEventListener('input', function () { S.st.filter = this.value; S.st.page = 1; renderStorage(); });
   $('#stSort').addEventListener('change', function () { setStSort(this.value); });
 
+  // 云函数
+  $('#fnRefresh').addEventListener('click', loadFunctions);
+
   // 环境配置
   $('#envAdd').addEventListener('click', () => openEnvModal(''));
   $('#envModalSave').addEventListener('click', saveEnvModal);
@@ -320,6 +330,8 @@ document.addEventListener('DOMContentLoaded', function () {
   labelBtn('stSelAll', 'check', '全选本页');
   labelBtn('stUnselAll', 'x', '取消全选');
   labelBtn('envAdd', 'plus', '新增环境');
+  labelBtn('fnRefresh', 'refresh', '刷新');
+  labelBtn('dbMetaBtn', 'sliders', '索引 / 权限');
   $('#envModalSave').innerHTML = ic('check') + ' 保存';
   // 存储视图模式：从 localStorage 恢复（默认网格）
   let _sv = 'grid';

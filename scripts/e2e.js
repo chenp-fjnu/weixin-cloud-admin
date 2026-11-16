@@ -73,9 +73,9 @@ function get(p) {
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
 
-    // 3. 首页渲染：4 个导航项
+    // 3. 首页渲染：5 个导航项
     await page.goto('http://' + HOST + ':' + PORT + '/', { waitUntil: 'networkidle' });
-    check('导航项渲染（4 个）', (await page.locator('.navitem').count()) === 4, 'got ' + (await page.locator('.navitem').count()));
+    check('导航项渲染（5 个）', (await page.locator('.navitem').count()) === 5, 'got ' + (await page.locator('.navitem').count()));
 
     // 4. 切到数据库页：集合下拉出现 demo，initDb 自动加载后出现 seed 文档行
     await page.click('[data-tab="db"]');

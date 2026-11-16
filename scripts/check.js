@@ -1,4 +1,4 @@
-/* 语法检查：node --check 全部 9 个 JS（ESM 文件按 .mjs 校验，避免 import/export 误报）
+/* 语法检查：node --check 全部 10 个 JS（ESM 文件按 .mjs 校验，避免 import/export 误报）
    用法：node scripts/check.js */
 'use strict';
 const fs = require('fs');
@@ -15,6 +15,7 @@ const files = [
   'public/js/overview.js',
   'public/js/db.js',
   'public/js/storage.js',
+  'public/js/functions.js',
   'public/js/settings.js',
   'public/js/main.js'
 ];

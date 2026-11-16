@@ -1,9 +1,23 @@
+---
+项目: weixin-cloud-admin
+名称: 云端数据管理台
+类型: 本地运维工具
+状态: 生产中
+客户: 万有空间（内部使用）
+技术栈: Node.js + CloudBase SDK
+开始: 2026-11-16
+最后更新: 2026-11-16
+---
+
 # 云端数据管理台
 
 一个跑在**本地**的独立 Web 管理台，用于「查看 + 管理」一个或多个腾讯云 CloudBase（云开发）环境内的全部资源：
 
 - **云数据库**：所有集合的文档（浏览 / 搜索 / 排序 / 新增 / 编辑 / 删除）
+- **数据库索引 & 集合权限**：查看 / 创建 / 删除集合索引（多字段、升/降序、唯一），查看 / 修改集合安全规则（预设 + CUSTOM 规则表达式）
 - **云存储**：根目录下的全部文件（目录浏览 / 图片预览 / 上传 / 删除 / 临时链接）
+- **云存储权限（ACL）**：查看 / 修改环境级存储权限（五档预设 + CUSTOM 读写规则表达式）
+- **云函数**：函数列表 / 详情 / 配置调整 / 调用测试 / 定时触发器管理 / 删除
 - **多环境切换**：顶栏下拉框切换不同云环境，默认环境可随时变更
 - **环境配置页**：在页面内直接新增 / 编辑 / 删除云环境及其腾讯云凭证，保存即时生效、重启不丢失（持久化到 `config/environments.json`），并支持一键测试凭证连通性
 
@@ -14,8 +28,9 @@
 | Tab | 能力 |
 | --- | --- |
 | 概览 | 各集合文档数统计、云存储顶层目录数 / 总文件数 / 总大小、子目录聚合视图 |
-| 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除） |
-| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效） |
+| 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除）；「索引 / 权限」面板：查看 / 创建 / 删除集合索引（多字段、方向、唯一），查看 / 修改集合安全规则（预设下拉 + CUSTOM 规则表达式） |
+| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效）；顶部 ACL 卡片：查看 / 修改环境级存储权限（READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM） |
+| 云函数 | 函数列表 → 展开详情：基础信息 / 配置调整（内存 / 超时）/ 环境变量 / 触发器（增删）/ 在线调用测试（JSON 参数 → 结果 + 日志 + 耗时）/ 删除函数 |
 | 环境配置 | 新增 / 编辑 / 删除云环境与凭证、设默认、测试凭证连通性；列表仅显示脱敏 SecretId |
 
 ## 技术栈
@@ -24,8 +39,11 @@
 | --- | --- |
 | 后端 | Node.js（≥16）+ 原生 `http` 模块，无框架 |
 | 数据库操作 | `@cloudbase/node-sdk`（与云函数 `wx-server-sdk` 同套 API） |
+| 索引 / 集合权限 | `@cloudbase/manager-node`（`database.describeCollection` / `updateCollection`；安全规则走 `commonService('tcb','2018-06-08')` 的 `DescribeSafeRule` / `ModifySafeRule`） |
 | 存储列举 / 临时 URL / 删除 | `@cloudbase/manager-node`（`listDirectoryFiles` / `getTemporaryUrl` / `deleteFile`） |
 | 存储上传 | `@cloudbase/node-sdk`（`uploadFile`） |
+| 存储权限（ACL） | `@cloudbase/manager-node`（`storage.getStorageAcl` / `setStorageAcl`） |
+| 云函数 | `@cloudbase/manager-node`（`functions.*`）；触发器列举走 `commonService('scf','2018-04-16')` 的 `ListTriggers` |
 | 前端 | 零依赖原生 JS + 单页 HTML（`public/index.html` + `public/styles.css` + `public/js/*.js`，ES Modules，无构建） |
 
 ## 目录结构
@@ -37,20 +55,21 @@
 │   ├── environments.json  # 环境+凭证持久化（页面「环境配置」自动写入，已被 .gitignore 忽略）
 │   └── audit.jsonl        # 变更审计日志（append-only，记录文档/文件/环境增删改，已被 .gitignore 忽略）
 ├── public/
-│   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 / 环境配置 四个 Tab）
+│   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 / 云函数 / 环境配置 五个 Tab）
 │   ├── styles.css     # 全局样式
 │   └── js/            # 前端逻辑（零依赖原生 JS，无构建）
 │       ├── common.js      # 工具 + 统一 API 请求 + 全局状态
 │       ├── overview.js    # 概览 Tab
-│       ├── db.js          # 云数据库 Tab + 文档模态框
-│       ├── storage.js     # 云存储 Tab
+│       ├── db.js          # 云数据库 Tab + 文档模态框 + 索引/权限面板
+│       ├── storage.js     # 云存储 Tab + ACL 卡片
+│       ├── functions.js   # 云函数 Tab（列表 / 配置 / 调用 / 触发器）
 │       ├── settings.js    # 环境配置 Tab
 │       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动（ES Module 入口）
 ├── scripts/
-│   ├── check.js           # 语法检查（9 个 JS 逐一 node --check）
-│   ├── smoke.js           # 隔离冒烟测试（Mock 模式：临时配置目录 + 内存假 SDK，34 项断言）
+│   ├── check.js           # 语法检查（10 个 JS 逐一 node --check）
+│   ├── smoke.js           # 隔离冒烟测试（Mock 模式：临时配置目录 + 内存假 SDK，65 项断言）
 │   ├── e2e.js             # Playwright E2E（未安装 playwright 时自动 SKIPPED）
-│   └── mock-cloudbase.js  # 内存版 CloudBase SDK（MOCK_CLOUDBASE=1 时替代真实 SDK）
+│   └── mock-cloudbase.js  # 内存版 CloudBase SDK（MOCK_CLOUDBASE=1 时替代真实 SDK；覆盖文档 / 存储 / 索引 / 集合权限 / 存储 ACL / 云函数 / 触发器）
 └── package.json
 ```
 
@@ -91,8 +110,8 @@ npm start
 ### 4. 开发校验（可选）
 
 ```bash
-npm run check   # 语法检查：9 个 JS 文件逐一 node --check
-npm run smoke   # 隔离冒烟测试：临时配置目录 + 内存 Mock SDK（MOCK_CLOUDBASE=1），34 项断言（不触碰真实 config/，零网络零凭证）
+npm run check   # 语法检查：10 个 JS 文件逐一 node --check
+npm run smoke   # 隔离冒烟测试：临时配置目录 + 内存 Mock SDK（MOCK_CLOUDBASE=1），65 项断言（不触碰真实 config/，零网络零凭证）
 npm run e2e     # Playwright 无头浏览器 E2E（需先 npm i -D playwright && npx playwright install chromium；未安装则 SKIPPED）
 npm test        # check + smoke + e2e 一起跑
 ```
@@ -135,6 +154,20 @@ npm test        # check + smoke + e2e 一起跑
 | POST | `/api/storage/delete` | 批量删除文件（body: `{ fileIDs: [...] }`） |
 | POST | `/api/storage/upload?cloudPath=` | 上传文件（raw body，上限见 `ADMIN_UPLOAD_LIMIT`；**同名路径返回 409**，防误覆盖——需覆盖请先删除旧文件） |
 | GET | `/api/storage/walk?prefix=&max=` | 递归扫描前缀下文件（概览 / 子目录聚合用，上限 5000） |
+| GET | `/api/collection/indexes?name=` | 集合索引列表（`indexes: [{ name, unique, keys: ["field:1"/"field:-1"], accesses }]`，含默认 `_id_`） |
+| POST | `/api/collection/indexes?name=` | 创建索引（body: `{ indexName, keys: [{ field, direction: "asc"|"desc" }], unique? }`，多字段复合索引） |
+| DELETE | `/api/collection/indexes?name=&index=` | 删除指定索引 |
+| GET | `/api/collection/permission?name=` | 集合安全规则（`acl`: READONLY/PRIVATE/ADMINWRITE/ADMINONLY/CUSTOM + `rule` 表达式） |
+| PUT | `/api/collection/permission?name=` | 修改集合安全规则（body: `{ acl, rule? }`；CUSTOM 时 `rule` 必填，缺省 400） |
+| GET | `/api/storage/acl` | 环境级存储权限（`acl` + CUSTOM 时 `rule: { read, write }`） |
+| PUT | `/api/storage/acl` | 修改存储权限（body: `{ acl, rule? }`；CUSTOM 时 `rule.read` / `rule.write` 必填，boolean 或规则表达式） |
+| GET | `/api/functions` | 云函数列表（`functions: [{ name }]` + `total`） |
+| GET | `/api/function?name=` | 函数详情（基础信息 + 环境变量 + 触发器列表；触发器列举失败不阻断） |
+| POST | `/api/function/config?name=` | 更新函数配置（body: `{ timeout?, memorySize?, envVariables? }`，仅更新传入字段） |
+| POST | `/api/function/invoke?name=` | 在线调用函数（body 为 JSON 参数对象；返回 `{ ok, err, log, duration, result }`） |
+| POST | `/api/function/trigger?name=` | 创建触发器（body: `{ name, type: "timer"|"event", config }`，定时为 cron 表达式） |
+| DELETE | `/api/function/trigger?name=&trigger=` | 删除触发器 |
+| DELETE | `/api/function?name=` | 删除云函数 |
 
 所有接口错误响应统一为 `{ "error": "可读原因" }`（含 HTTP 400/401/404/409/500/503）。
 
@@ -145,7 +178,7 @@ npm test        # check + smoke + e2e 一起跑
 - **路径白名单**：静态资源仅可访问 `public/` 目录（`path.resolve` 归一化 + 前缀 + 分隔符校验，防目录穿越）。
 - **输入校验**：集合名限制 `^[a-zA-Z0-9_-]+$`；筛选正则 ≤200 字符且字段名白名单；分页、排序、上限均有边界钳制；上传路径拒绝 `..` / 空段。
 - **`ADMIN_TOKEN` 鉴权**：设置后所有 `/api` 请求须带 `x-admin-token` 请求头（或 `?token=` 查询参数），比较采用常量时间算法。
-- **变更审计**：文档 / 存储文件 / 环境的增删改均追加到 `config/audit.jsonl`（单行 JSON：`at`/`action`/`envId`/`target`/`detail`），便于事后追溯「谁在何时改了什么」。
+- **变更审计**：文档 / 存储文件 / 环境 / 索引 / 集合权限 / 存储 ACL / 云函数（配置 / 调用 / 触发器 / 删除）的增删改均追加到 `config/audit.jsonl`（单行 JSON：`at`/`action`/`envId`/`target`/`detail`），便于事后追溯「谁在何时改了什么」。
 
 ## 缓存与竞态防护
 

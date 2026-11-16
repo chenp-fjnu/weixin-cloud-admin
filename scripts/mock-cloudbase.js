@@ -1,9 +1,16 @@
 /* 内存版 CloudBase Mock：MOCK_CLOUDBASE=1 时由 server.js 注入，替代 node-sdk / manager-node。
    零网络、零凭证，用于 smoke / e2e 冒烟测试。状态按 envId 隔离（_states）。
    仅实现 server.js 用到的 API 面：
-     tcb = { database(), uploadFile() }
-     manager = { database: { listCollections }, storage: { listCurrentDirectory,
-               listDirectoryFiles, getTemporaryUrl, deleteFile } } */
+     client = { database(), uploadFile() }
+     manager = {
+       database: { listCollections, describeCollection, updateCollection },
+       storage:  { listCurrentDirectory, listDirectoryFiles, getTemporaryUrl,
+                  deleteFile, getStorageAcl, setStorageAcl },
+       functions:{ getFunctionList, getFunctionDetail, updateFunctionConfig,
+                   invokeFunction, deleteFunction, createFunctionTriggers, deleteFunctionTrigger },
+       commonService(service, version) -> { call({ Action, Param }) }
+         // DescribeSafeRule / ModifySafeRule / ListTriggers（裸 OpenAPI 透传）
+     } */
 'use strict';
 
 const _states = new Map(); // envId -> { collections: { name: [docs] }, storage: Map<cloudPath, {buffer, size}> }
@@ -19,7 +26,22 @@ function state(envId) {
           { _id: 'demo3', name: 'Charlie', createdAt: '2024-03-01T00:00:00Z', n: 3 }
         ]
       },
-      storage: new Map()
+      storage: new Map(),
+      indexes: {}, // colName -> [{ name, unique, keys:[{Name,Direction}], accesses }]
+      safeRule: {}, // colName -> { acl, rule }
+      storageAcl: { acl: 'READONLY', rule: null },
+      functions: {
+        hello: {
+          info: {
+            FunctionName: 'hello', Runtime: 'Nodejs16.13', Handler: 'index.main',
+            Timeout: 3, MemorySize: 256, Role: 'cos-roles/cos-full-access',
+            Description: 'mock hello', Namespace: '', Status: 'Active',
+            AddTime: '2024-01-01T00:00:00Z', ModTime: '2024-01-02T00:00:00Z',
+            EnvironmentVariables: { FOO: 'bar' }
+          },
+          triggers: [{ name: 'timer-hello', type: 'timer', config: '0 0 * * * *' }]
+        }
+      }
     };
     s.storage.set('avatars/a.png', { buf: Buffer.from('a'), size: 1 });
     s.storage.set('docs/readme.txt', { buf: Buffer.from('readme'), size: 6 });
@@ -126,7 +148,34 @@ function manager(envId) {
     database: {
       listCollections: async () => ({
         Collections: Object.keys(s.collections).map((n) => ({ CollectionName: n }))
-      })
+      }),
+      describeCollection: async (name) => {
+        const stored = s.indexes[name] || [];
+        const all = [
+          { Name: '_id_', Unique: true, Keys: [{ Name: '_id', Direction: '1' }], Accesses: { Ops: 0, Since: '' } }
+        ].concat(stored);
+        return { Indexes: all, IndexNum: all.length };
+      },
+      updateCollection: async (name, arg) => {
+        const list = (s.indexes[name] = s.indexes[name] || []);
+        if (arg && arg.CreateIndexes) {
+          for (const c of arg.CreateIndexes) {
+            const keys = ((c.MgoKeySchema && c.MgoKeySchema.MgoIndexKeys) || []).map((k) => ({
+              Name: k.Name, Direction: String(k.Direction)
+            }));
+            list.push({
+              Name: c.IndexName,
+              Unique: !!(c.MgoKeySchema && c.MgoKeySchema.MgoIsUnique),
+              Keys: keys,
+              Accesses: { Ops: 0, Since: '' }
+            });
+          }
+        }
+        if (arg && arg.DropIndexes) {
+          s.indexes[name] = list.filter((x) => x.Name !== arg.DropIndexes[0].IndexName);
+        }
+        return { ok: true };
+      }
     },
     storage: {
       listCurrentDirectory: async (prefix) => listLevel(prefix, s),
@@ -146,8 +195,80 @@ function manager(envId) {
       deleteFile: async (list) => {
         for (const it of list) s.storage.delete(typeof it === 'string' ? it : it && it.cloudPath);
         return { ok: true };
+      },
+      getStorageAcl: async (opt) =>
+        opt && opt.withRule ? { acl: s.storageAcl.acl, rule: s.storageAcl.rule } : s.storageAcl.acl,
+      setStorageAcl: async (acl, rule) => {
+        s.storageAcl = { acl, rule };
+        return { RequestId: 'mock' };
       }
-    }
+    },
+    functions: {
+      getFunctionList: async () => ({
+        Functions: Object.keys(s.functions).map((n) => ({ FunctionName: n })),
+        TotalCount: Object.keys(s.functions).length
+      }),
+      getFunctionDetail: async (name) => {
+        const f = s.functions[name];
+        if (!f) throw new Error('function not found: ' + name);
+        return Object.assign({}, f.info);
+      },
+      updateFunctionConfig: async (cfg) => {
+        const f = s.functions[cfg.name];
+        if (!f) throw new Error('function not found: ' + cfg.name);
+        if (cfg.timeout != null) f.info.Timeout = cfg.timeout;
+        if (cfg.memorySize != null) f.info.MemorySize = cfg.memorySize;
+        if (cfg.envVariables) {
+          const obj = {};
+          if (Array.isArray(cfg.envVariables)) cfg.envVariables.forEach((v) => { obj[v.key] = v.value; });
+          else Object.assign(obj, cfg.envVariables);
+          f.info.EnvironmentVariables = obj;
+        }
+        f.info.ModTime = new Date().toISOString();
+        return { ok: true };
+      },
+      invokeFunction: async (name, params) => {
+        const f = s.functions[name];
+        if (!f) throw new Error('function not found: ' + name);
+        return {
+          RequestId: 'mock', Log: '[mock] invoked ' + name, RetMsg: 'OK', ErrMsg: 'OK',
+          Duration: 5, InvokeResult: JSON.stringify({ ok: true, echo: params || {} })
+        };
+      },
+      deleteFunction: async (name) => { delete s.functions[name]; return { ok: true }; },
+      createFunctionTriggers: async (name, triggers) => {
+        const f = s.functions[name];
+        if (!f) throw new Error('function not found: ' + name);
+        for (const t of triggers) f.triggers.push({ name: t.name, type: t.type, config: t.config });
+        return { ok: true };
+      },
+      deleteFunctionTrigger: async (name, tname) => {
+        const f = s.functions[name];
+        if (!f) throw new Error('function not found: ' + name);
+        f.triggers = f.triggers.filter((t) => t.name !== tname);
+        return { ok: true };
+      }
+    },
+    commonService: () => ({
+      call: async ({ Action, Param }) => {
+        switch (Action) {
+          case 'DescribeSafeRule': {
+            const r = s.safeRule[Param.CollectionName];
+            return { AclTag: (r && r.acl) || 'READONLY', Rule: (r && r.rule) || '' };
+          }
+          case 'ModifySafeRule': {
+            s.safeRule[Param.CollectionName] = { acl: Param.AclTag, rule: Param.Rule || '' };
+            return { RequestId: 'mock' };
+          }
+          case 'ListTriggers': {
+            const f = s.functions[Param.Name];
+            return { Triggers: f ? f.triggers : [] };
+          }
+          default:
+            return { RequestId: 'mock' };
+        }
+      }
+    })
   };
 }
 

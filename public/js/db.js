@@ -2,7 +2,7 @@
    集合下拉、分页/筛选/排序、表格渲染（业务字段 + 行点击 + cloud:// 图片批量临时链接）、文档 CRUD。
    openCollection 供概览卡片点击跳转调用（见 overview.js）。 */
 
-import { $, $$, toast, apiGet, apiPut, apiDelete, S, esc, fmtNum, isTimeField, fmtTimeValue, showModal } from './common.js';
+import { $, $$, toast, apiGet, apiPost, apiPut, apiDelete, S, esc, fmtNum, isTimeField, fmtTimeValue, showModal } from './common.js';
 import { resolveUrls, isImage } from './storage.js';
 import { setNav } from './main.js'; // 函数级循环引用：仅调用时求值，安全
 
@@ -19,6 +19,9 @@ function resetDb() {
   dbSeq++; // 使所有在途请求过期
   S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
   S.db.sort = ''; S.db.sortDir = 'desc'; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
+  // 索引/权限面板复位（切环境后不残留旧集合的元数据）
+  _metaCol = ''; _metaSeq++;
+  const p = $('#dbMetaPanel'); if (p) { p.style.display = 'none'; p.innerHTML = ''; }
 }
 async function initDb() {
   const sel = $('#dbCollection');
@@ -428,8 +431,172 @@ function delDoc(id) {
     .finally(() => { _delBusy = false; });
 }
 
+// ---------- 集合索引 / 集合权限（安全规则） ----------
+let _metaCol = '';
+let _metaSeq = 0; // 请求序号：切集合 / 切环境时丢弃过期响应
+const _ACL_PRESETS = [
+  { v: 'READONLY', t: '只读（READONLY）· 所有用户可读，仅创建者和管理员可写' },
+  { v: 'PRIVATE', t: '私有（PRIVATE）· 仅创建者及管理员可读写' },
+  { v: 'ADMINWRITE', t: '管理写（ADMINWRITE）· 所有用户可读，仅管理员可写' },
+  { v: 'ADMINONLY', t: '仅管理（ADMINONLY）· 仅管理员可读写' },
+  { v: 'CUSTOM', t: '自定义（CUSTOM）· 按安全规则表达式' }
+];
+
+function toggleDbMeta() {
+  const panel = $('#dbMetaPanel');
+  const show = panel.style.display === 'none';
+  if (!S.db.collection) {
+    panel.style.display = 'block';
+    panel.innerHTML = '<div class="empty" style="padding:18px">请先选择集合，再管理其索引与权限</div>';
+    return;
+  }
+  if (show) {
+    panel.style.display = 'block';
+    if (_metaCol !== S.db.collection) loadDbMeta();
+  } else panel.style.display = 'none';
+}
+
+// 切集合后：面板打开时自动跟随新集合刷新
+function dbMetaFollow() {
+  const panel = $('#dbMetaPanel');
+  if (panel && panel.style.display !== 'none' && S.db.collection) loadDbMeta();
+}
+
+async function loadDbMeta() {
+  const name = S.db.collection;
+  _metaCol = name;
+  const seq = ++_metaSeq;
+  const panel = $('#dbMetaPanel');
+  panel.style.display = 'block';
+  panel.innerHTML = '<div class="empty" style="padding:24px"><span class="spin"></span> 正在读取索引与权限…</div>';
+  let idx = null, perm = null;
+  try { idx = await apiGet('/api/collection/indexes?name=' + encodeURIComponent(name)); }
+  catch (e) { idx = { error: e.message }; }
+  try { perm = await apiGet('/api/collection/permission?name=' + encodeURIComponent(name)); }
+  catch (e) { perm = { error: e.message }; }
+  if (seq !== _metaSeq || _metaCol !== name) return;
+  renderDbMeta(idx, perm);
+}
+
+function renderDbMeta(idx, perm) {
+  const name = S.db.collection;
+  const panel = $('#dbMetaPanel');
+  // 索引列表
+  const indexRows = (idx.error
+    ? [{ name: '', unique: false, keys: [], err: idx.error }]
+    : (idx.indexes || [])).map(x => x.err
+      ? '<tr><td colspan="5" class="empty">读取失败：' + esc(x.err) + '</td></tr>'
+      : '<tr>' +
+          '<td class="val mono">' + esc(x.name) + (x.unique ? ' <span class="pill pub">唯一</span>' : '') + '</td>' +
+          '<td class="val mono">' + (x.keys || []).map(esc).join(' + ') + '</td>' +
+          '<td class="val">' + (x.accesses || 0) + '</td>' +
+          '<td class="val">' + (x.name === '_id_' ? '<span class="muted">系统索引</span>' : '') + '</td>' +
+          '<td class="opcell">' + (x.name === '_id_'
+            ? ''
+            : '<button class="btn sm danger ghost" data-del-idx="' + esc(x.name) + '">删除</button>') +
+        '</tr>').join('');
+  // 权限下拉
+  const acl = (perm && !perm.error) ? perm.acl : 'READONLY';
+  const permRule = (perm && !perm.error) ? perm.rule : '';
+  const aclOpts = _ACL_PRESETS.map(p =>
+    '<option value="' + p.v + '"' + (p.v === acl ? ' selected' : '') + '>' + esc(p.t) + '</option>').join('');
+  panel.innerHTML =
+    '<div class="panel" style="margin:0 0 16px;padding:14px 16px">' +
+      '<div class="pagehead" style="margin:0 0 12px"><div><h2 style="margin:0">集合 · ' + esc(name) + '</h2>' +
+      '<div class="sub">索引与安全规则（权限）</div></div></div>' +
+
+      '<h2 class="sect">索引<span class="ln"></span></h2>' +
+      '<div class="tblwrap" style="max-height:220px"><table>' +
+        '<thead><tr><th style="width:22%">索引名</th><th>字段（方向）</th><th style="width:90px">访问次数</th><th style="width:90px">类型</th><th class="opcell">操作</th></tr></thead>' +
+        '<tbody>' + indexRows + '</tbody></table></div>' +
+      '<div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px;flex-wrap:wrap">' +
+        '<label class="fld" style="margin:0;width:170px"><span>索引名</span><input type="text" id="idxName" class="mono" placeholder="如 idx_openid" /></label>' +
+        '<div id="idxKeys" style="display:flex;flex-direction:column;gap:6px;min-width:300px"></div>' +
+        '<button class="btn sm" id="idxKeyAdd">＋ 字段</button>' +
+        '<label class="chk" style="margin:0 0 8px"><input type="checkbox" id="idxUnique" /> 唯一</label>' +
+        '<button class="btn sm" id="idxCreate">创建索引</button>' +
+      '</div>' +
+
+      '<h2 class="sect" style="margin-top:18px">集合权限（安全规则）<span class="ln"></span></h2>' +
+      (perm && perm.error
+        ? '<p class="hint" style="color:var(--danger)">读取失败：' + esc(perm.error) + '</p>'
+        : '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
+            '<label class="fld" style="margin:0;min-width:320px"><span>权限预设</span><select id="permAcl" style="width:100%">' + aclOpts + '</select></label>' +
+            '<button class="btn sm" id="permSave">保存权限</button>' +
+          '</div>' +
+          '<div id="permRuleWrap" style="display:' + (acl === 'CUSTOM' ? 'block' : 'none') + ';margin-top:10px">' +
+            '<label class="fld" style="margin:0"><span>read 规则表达式</span>' +
+            '<textarea class="code" id="permRule" style="width:100%;min-height:56px;font-size:12px" spellcheck="false">' + esc(permRule) + '</textarea>' +
+            '<span class="fdesc">如 <code>auth.uid != null</code>；语法同云开发安全规则</span></label>' +
+          '</div>') +
+    '</div>';
+
+  // 索引字段行（默认一行）
+  const keysBox = $('#idxKeys');
+  const addKeyRow = (field) => {
+    const row = document.createElement('div');
+    row.className = 'idxkeyrow';
+    row.style.cssText = 'display:flex;gap:8px;align-items:center';
+    row.innerHTML =
+      '<input type="text" class="idxkey mono" placeholder="字段名" value="' + esc(field || '') + '" style="flex:1;min-width:120px" />' +
+      '<select class="idxkeydir" title="排序方向"><option value="asc">升序</option><option value="desc">降序</option></select>' +
+      '<button class="btn sm ghost idxkeyrm" title="移除该字段" type="button">✕</button>';
+    row.querySelector('.idxkeyrm').addEventListener('click', () => row.remove());
+    keysBox.appendChild(row);
+  };
+  addKeyRow('');
+  $('#idxKeyAdd').addEventListener('click', () => addKeyRow(''));
+
+  $('#idxCreate').addEventListener('click', () => {
+    const indexName = $('#idxName').value.trim();
+    const keys = $$('#idxKeys .idxkeyrow').map(r => ({
+      field: r.querySelector('.idxkey').value.trim(),
+      direction: r.querySelector('.idxkeydir').value
+    }));
+    if (!indexName) return toast('请填写索引名', 'err');
+    if (!keys.some(k => k.field)) return toast('请至少填写一个索引字段', 'err');
+    const btn = $('#idxCreate'); btn.disabled = true;
+    apiPost('/api/collection/indexes?name=' + encodeURIComponent(name), {
+      indexName, keys: keys.filter(k => k.field), unique: $('#idxUnique').checked
+    }).then(() => { toast('索引已创建', 'ok'); loadDbMeta(); })
+      .catch(e => toast('创建索引失败：' + e.message, 'err'))
+      .finally(() => { btn.disabled = false; });
+  });
+
+  $$('#dbMetaPanel [data-del-idx]').forEach(b => b.addEventListener('click', () => {
+    const idxName = b.getAttribute('data-del-idx');
+    if (!confirm('确认删除索引 ' + idxName + ' ？')) return;
+    apiDelete('/api/collection/indexes?name=' + encodeURIComponent(name) + '&index=' + encodeURIComponent(idxName))
+      .then(() => { toast('索引已删除', 'ok'); loadDbMeta(); })
+      .catch(e => toast('删除失败：' + e.message, 'err'));
+  }));
+
+  const permAcl = $('#permAcl');
+  if (permAcl) {
+    permAcl.addEventListener('change', function () {
+      $('#permRuleWrap').style.display = this.value === 'CUSTOM' ? 'block' : 'none';
+    });
+    $('#permSave').addEventListener('click', () => {
+      const acl = $('#permAcl').value;
+      const body = { acl };
+      if (acl === 'CUSTOM') {
+        const rule = $('#permRule').value.trim();
+        if (!rule) return toast('自定义规则（CUSTOM）须填写 read 规则表达式', 'err');
+        body.rule = rule;
+      }
+      if (!confirm('确认将集合 ' + name + ' 的安全规则改为 ' + acl + ' ？此操作影响所有该集合的读写。')) return;
+      const btn = $('#permSave'); btn.disabled = true;
+      apiPut('/api/collection/permission?name=' + encodeURIComponent(name), body)
+        .then(() => { toast('集合权限已保存', 'ok'); loadDbMeta(); })
+        .catch(e => toast('保存失败：' + e.message, 'err'))
+        .finally(() => { btn.disabled = false; });
+    });
+  }
+}
+
 // ---------- 模块导出 ----------
 export {
   resetDb, initDb, openCollection, loadDb, dbSkeletonRows,
-  setDocMode, docDirty, closeModals, fmtDocBtn, updateDirty, saveDoc, openDoc
+  setDocMode, docDirty, closeModals, fmtDocBtn, updateDirty, saveDoc, openDoc,
+  toggleDbMeta, dbMetaFollow
 };

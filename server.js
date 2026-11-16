@@ -146,6 +146,11 @@ function getManager(envId) {
 }
 function db(envId) { return getClient(envId).tcb.database(); }
 
+// 裸 TCB / SCF OpenAPI 通道：SDK 未直接封装「集合安全规则」「SCF 触发器列举」，
+// 走 commonService 透传 Action + Param（EnvId 由服务端注入，不下放前端）。
+function tcbService(envId) { return getManager(envId).commonService('tcb', '2018-06-08'); }
+function scfService(envId) { return getManager(envId).commonService('scf', '2018-04-16'); }
+
 // 概览 TTL 缓存：存储采样（递归 walk 上限 5000 文件）+ 全集合 count 是最重的接口，
 // 60s 内同环境重复进入/切环境直接复用；请求带 fresh=1 强制重算（概览页「刷新」按钮）。
 const OVERVIEW_TTL_MS = 60 * 1000;
@@ -780,6 +785,224 @@ const handlers = {
       const files = await storageWalk(prefix, maxFiles, envId);
       return sendJson(res, 200, { prefix, count: files.length, files });
     } catch (e) { return sendError(res, 500, e.message); }
+  },
+
+  // ---------- 数据库索引 ----------
+  'GET /api/collection/indexes': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '集合名非法');
+    try {
+      const r = await getManager(envId).database.describeCollection(name);
+      const indexes = ((r && r.Indexes) || []).map(x => ({
+        name: x.Name || '',
+        unique: !!x.Unique,
+        keys: (x.Keys || []).map(k => (k.Name || '') + (k.Direction ? ':' + k.Direction : '')),
+        accesses: (x.Accesses && x.Accesses.Ops != null) ? x.Accesses.Ops : 0
+      }));
+      return sendJson(res, 200, { name, indexes });
+    } catch (e) { return sendError(res, 500, '读取索引失败：' + (e.message || e)); }
+  },
+
+  'POST /api/collection/indexes': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '集合名非法');
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const indexName = String((body && body.indexName) || '').trim();
+    const keys = (body && Array.isArray(body.keys)) ? body.keys : [];
+    if (!/^[a-zA-Z0-9_]+$/.test(indexName)) return sendError(res, 400, '索引名须为字母 / 数字 / _');
+    // keys: [{ field, direction: 'asc'|'desc' }]
+    const mgo = keys.map(k => ({ Name: String(k.field || '').trim(), Direction: (k.direction === 'desc' ? '-1' : '1') }));
+    if (!mgo.length || mgo.some(k => !k.Name)) return sendError(res, 400, '请至少指定一个索引字段');
+    const unique = !!(body && body.unique);
+    try {
+      await getManager(envId).database.updateCollection(name, {
+        CreateIndexes: [{ IndexName: indexName, MgoKeySchema: { MgoIndexKeys: mgo, MgoIsUnique: unique } }]
+      });
+      audit('index.create', envId, name, 'index=' + indexName + ' unique=' + unique);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '创建索引失败：' + (e.message || e)); }
+  },
+
+  'DELETE /api/collection/indexes': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    const indexName = (params.get('index') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '集合名非法');
+    if (!indexName) return sendError(res, 400, '缺少索引名');
+    try {
+      await getManager(envId).database.updateCollection(name, { DropIndexes: [{ IndexName: indexName }] });
+      audit('index.drop', envId, name, 'index=' + indexName);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '删除索引失败：' + (e.message || e)); }
+  },
+
+  // ---------- 集合安全规则（权限） ----------
+  'GET /api/collection/permission': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '集合名非法');
+    try {
+      const r = await tcbService(envId).call({ Action: 'DescribeSafeRule', Param: { EnvId: envId, CollectionName: name } });
+      return sendJson(res, 200, { name, acl: (r && r.AclTag) || 'READONLY', rule: (r && r.Rule) || '' });
+    } catch (e) { return sendError(res, 500, '读取集合权限失败：' + (e.message || e)); }
+  },
+
+  'PUT /api/collection/permission': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '集合名非法');
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const acl = String((body && body.acl) || '').trim().toUpperCase();
+    if (!['READONLY', 'PRIVATE', 'ADMINWRITE', 'ADMINONLY', 'CUSTOM'].includes(acl)) {
+      return sendError(res, 400, '权限类型非法（可选：READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM）');
+    }
+    const rule = String((body && body.rule) || '').trim();
+    if (acl === 'CUSTOM' && !rule) return sendError(res, 400, '自定义规则（CUSTOM）须填写 read / write 规则表达式');
+    try {
+      const param = { EnvId: envId, CollectionName: name, AclTag: acl };
+      if (acl === 'CUSTOM') param.Rule = JSON.stringify({ read: rule });
+      await tcbService(envId).call({ Action: 'ModifySafeRule', Param: param });
+      audit('collection.permission', envId, name, 'acl=' + acl);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '修改集合权限失败：' + (e.message || e)); }
+  },
+
+  // ---------- 云存储 ACL（权限） ----------
+  'GET /api/storage/acl': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    try {
+      const r = await getManager(envId).storage.getStorageAcl({ withRule: true });
+      return sendJson(res, 200, { acl: (r && r.acl) || '', rule: (r && r.rule) || null });
+    } catch (e) { return sendError(res, 500, '读取存储权限失败：' + (e.message || e)); }
+  },
+
+  'PUT /api/storage/acl': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const acl = String((body && body.acl) || '').trim().toUpperCase();
+    if (!['READONLY', 'PRIVATE', 'ADMINWRITE', 'ADMINONLY', 'CUSTOM'].includes(acl)) {
+      return sendError(res, 400, '权限类型非法（可选：READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM）');
+    }
+    const rule = (body && body.rule) || null;
+    if (acl === 'CUSTOM') {
+      if (!rule || typeof rule !== 'object' || rule.read == null || rule.write == null) {
+        return sendError(res, 400, '自定义规则（CUSTOM）须填写 read / write（boolean 或规则表达式）');
+      }
+    }
+    try {
+      await getManager(envId).storage.setStorageAcl(acl, rule);
+      audit('storage.acl', envId, 'storage', 'acl=' + acl);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '修改存储权限失败：' + (e.message || e)); }
+  },
+
+  // ---------- 云函数 ----------
+  'GET /api/functions': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    try {
+      const r = await getManager(envId).functions.getFunctionList(100, 0);
+      const list = ((r && r.Functions) || []).map(f => ({ name: f.FunctionName || f.name || '' })).filter(x => x.name);
+      return sendJson(res, 200, { functions: list, total: (r && r.TotalCount) || list.length });
+    } catch (e) { return sendError(res, 500, '获取云函数列表失败：' + (e.message || e)); }
+  },
+
+  'GET /api/function': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    try {
+      const d = await getManager(envId).functions.getFunctionDetail(name);
+      let triggers = [];
+      try {
+        const t = await scfService(envId).call({ Action: 'ListTriggers', Param: { EnvId: envId, Name: name } });
+        triggers = (t && t.Triggers) || [];
+      } catch (e) { /* 触发器列举失败不阻断详情 */ }
+      const info = {
+        name: d.FunctionName || name, runtime: d.Runtime || '', handler: d.Handler || '',
+        timeout: d.Timeout != null ? d.Timeout : 0, memory: d.MemorySize != null ? d.MemorySize : 0,
+        role: d.Role || '', description: d.Description || '', namespace: d.Namespace || '',
+        status: d.Status || '', addTime: d.AddTime || '', modTime: d.ModTime || '',
+        envVariables: d.EnvironmentVariables ? Object.keys(d.EnvironmentVariables).map(k => ({ key: k, value: d.EnvironmentVariables[k] })) : []
+      };
+      return sendJson(res, 200, { info, triggers });
+    } catch (e) { return sendError(res, 500, '获取函数详情失败：' + (e.message || e)); }
+  },
+
+  'POST /api/function/config': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const cfg = { name };
+    if (body.timeout != null) cfg.timeout = Number(body.timeout);
+    if (body.memorySize != null) cfg.memorySize = Number(body.memorySize);
+    if (body.envVariables) cfg.envVariables = body.envVariables;
+    try {
+      await getManager(envId).functions.updateFunctionConfig(cfg);
+      audit('function.config', envId, name, 'timeout=' + (cfg.timeout != null ? cfg.timeout : '-') + ' mem=' + (cfg.memorySize != null ? cfg.memorySize : '-'));
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '更新函数配置失败：' + (e.message || e)); }
+  },
+
+  'POST /api/function/invoke': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const payload = (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+    try {
+      const r = await getManager(envId).functions.invokeFunction(name, payload);
+      let result = r && r.InvokeResult != null ? r.InvokeResult : null;
+      if (typeof result === 'string') { try { result = JSON.parse(result); } catch (e) {} }
+      audit('function.invoke', envId, name, 'dur=' + ((r && r.Duration) || 0) + 'ms');
+      return sendJson(res, 200, {
+        ok: !r || !r.ErrMsg || r.ErrMsg === 'OK' || r.ErrMsg === '',
+        err: (r && r.ErrMsg) || '', log: (r && r.Log) || '',
+        duration: (r && r.Duration) || 0, result
+      });
+    } catch (e) { return sendError(res, 500, '调用函数失败：' + (e.message || e)); }
+  },
+
+  'POST /api/function/trigger': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    let body; try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const tname = String((body && body.name) || '').trim();
+    const type = String((body && body.type) || 'timer').trim();
+    const config = String((body && body.config) || '').trim();
+    if (!tname) return sendError(res, 400, '缺少触发器名称');
+    try {
+      await getManager(envId).functions.createFunctionTriggers(name, [{ name: tname, type, config }]);
+      audit('function.trigger.create', envId, name, 'trigger=' + tname);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '创建触发器失败：' + (e.message || e)); }
+  },
+
+  'DELETE /api/function/trigger': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    const trigger = (params.get('trigger') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    if (!trigger) return sendError(res, 400, '缺少触发器名');
+    try {
+      await getManager(envId).functions.deleteFunctionTrigger(name, trigger);
+      audit('function.trigger.delete', envId, name, 'trigger=' + trigger);
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '删除触发器失败：' + (e.message || e)); }
+  },
+
+  'DELETE /api/function': async (req, res, params) => {
+    const envId = resolveEnv(params);
+    const name = (params.get('name') || '').trim();
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return sendError(res, 400, '函数名非法');
+    try {
+      await getManager(envId).functions.deleteFunction(name);
+      audit('function.delete', envId, name, '');
+      return sendJson(res, 200, { ok: true });
+    } catch (e) { return sendError(res, 500, '删除函数失败：' + (e.message || e)); }
   }
 };
 

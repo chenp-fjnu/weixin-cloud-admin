@@ -3,7 +3,7 @@
    目录内筛选/排序、分页（每页条数可选）、悬停单删、文件预览、多选删除、
    单文件/拖拽上传、子目录扫描聚合。 */
 
-import { $, $$, S, apiGet, apiPost, apiUpload, toast, esc, ic, fmtSize, fmtDate, showModal, hideModal } from './common.js';
+import { $, $$, S, apiGet, apiPost, apiPut, apiUpload, toast, esc, ic, fmtSize, fmtDate, showModal, hideModal } from './common.js';
 
 let stSel = new Set();
 let stUrlSeq = 0; // 缩略图批量 URL 请求序号：目录切换后丢弃过期结果
@@ -83,6 +83,7 @@ async function loadStorage() {
   loading.style.display = ''; body.style.display = 'none';
   $('#stScanPanel').style.display = 'none';
   hideBatchBar(); // 目录切换即失效的选中态，同步收起批量操作条
+  loadStorageAcl(); // 存储 ACL 与目录无关，随 Tab 刷新读取
   const p = new URLSearchParams({ prefix: S.st.prefix });
   try {
     const r = await apiGet('/api/storage?' + p.toString());
@@ -265,6 +266,8 @@ function resetStorage() {
   S.st.allFiles = []; S.st.allTruncated = false; S.st.allLoadedAt = 0;
   stUrlSeq++; // 使在途缩略图 URL 请求过期
   clearUrlCache();
+  _aclSeq++; // 使在途 ACL 请求过期，切环境后不回填旧权限
+  const aclBox = $('#stAclBox'); if (aclBox) aclBox.innerHTML = '';
 }
 function clearSel() {
   stSel = new Set();
@@ -496,8 +499,94 @@ async function uploadToCurrent() {
 }
 
 // ---------- 模块导出 ----------
+// ---------- 存储 ACL（权限） ----------
+// 五档：READONLY 只读 / PRIVATE 私有 / ADMINWRITE 管理写 / ADMINONLY 仅管理 / CUSTOM 自定义规则
+const ACL_PRESETS = [
+  { v: 'READONLY', t: '只读（READONLY）· 所有用户可读，仅创建者和管理员可写' },
+  { v: 'PRIVATE', t: '私有（PRIVATE）· 仅创建者及管理员可读写' },
+  { v: 'ADMINWRITE', t: '管理写（ADMINWRITE）· 所有用户可读，仅管理员可写' },
+  { v: 'ADMINONLY', t: '仅管理（ADMINONLY）· 仅管理员可读写' },
+  { v: 'CUSTOM', t: '自定义（CUSTOM）· 按安全规则表达式' }
+];
+let _aclSeq = 0;
+
+async function loadStorageAcl() {
+  const box = $('#stAclBox');
+  if (!box) return;
+  const seq = ++_aclSeq;
+  box.innerHTML = '<span class="muted">读取中…</span>';
+  try {
+    const r = await apiGet('/api/storage/acl');
+    if (seq !== _aclSeq) return;
+    renderStorageAcl(r.acl || '', r.rule || null);
+  } catch (e) {
+    if (seq !== _aclSeq) return;
+    box.innerHTML = '<span class="muted">读取失败：' + esc(e.message) + '</span>';
+  }
+}
+
+function renderStorageAcl(acl, rule) {
+  const box = $('#stAclBox');
+  const presetOpts = ACL_PRESETS.map(p =>
+    '<option value="' + p.v + '"' + (p.v === acl ? ' selected' : '') + '>' + esc(p.t) + '</option>').join('');
+  const isCustom = acl === 'CUSTOM';
+  // 规则解析：rule 为 {read, write} 两字段（各为 boolean 或表达式字符串）
+  let readV = '', writeV = '';
+  if (rule && typeof rule === 'object') {
+    readV = rule.read == null ? '' : (typeof rule.read === 'boolean' ? String(rule.read) : String(rule.read));
+    writeV = rule.write == null ? '' : (typeof rule.write === 'boolean' ? String(rule.write) : String(rule.write));
+  }
+  box.innerHTML =
+    '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
+      '<label class="fld" style="margin:0;min-width:280px"><span>存储权限（ACL）</span>' +
+        '<select id="stAclSel" style="width:100%">' + presetOpts + '</select></label>' +
+      '<button class="btn sm" id="stAclSave">保存权限</button>' +
+    '</div>' +
+    '<div id="stAclRuleWrap" style="display:' + (isCustom ? 'block' : 'none') + ';margin-top:12px">' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
+        '<label class="fld" style="margin:0;flex:1;min-width:220px"><span>read 规则（true/false 或表达式）</span>' +
+          '<input type="text" id="stAclRead" class="mono" value="' + esc(readV) + '" placeholder="如 resource.openid == auth.uid" /></label>' +
+        '<label class="fld" style="margin:0;flex:1;min-width:220px"><span>write 规则（true/false 或表达式）</span>' +
+          '<input type="text" id="stAclWrite" class="mono" value="' + esc(writeV) + '" placeholder="如 false" /></label>' +
+      '</div>' +
+      '<p class="hint" style="margin-top:8px">表达式语法同云开发安全规则：可引用 <code>auth.uid</code> / <code>resource.openid</code> 等；<code>true</code>/<code>false</code> 表示恒允许/拒绝。</p>' +
+    '</div>';
+  $('#stAclSel').addEventListener('change', function () {
+    $('#stAclRuleWrap').style.display = this.value === 'CUSTOM' ? 'block' : 'none';
+  });
+  $('#stAclSave').addEventListener('click', saveStorageAcl);
+}
+
+async function saveStorageAcl() {
+  const acl = $('#stAclSel').value;
+  const body = { acl };
+  if (acl === 'CUSTOM') {
+    const read = $('#stAclRead').value.trim();
+    const write = $('#stAclWrite').value.trim();
+    if (!read || !write) return toast('自定义规则须填写 read 与 write', 'err');
+    body.rule = { read: parseAclVal(read), write: parseAclVal(write) };
+  }
+  const btn = $('#stAclSave'); btn.disabled = true; btn.textContent = '保存中…';
+  try {
+    await apiPut('/api/storage/acl', body);
+    toast('存储权限已保存', 'ok');
+    loadStorageAcl();
+  } catch (e) {
+    toast('保存失败：' + e.message, 'err');
+    btn.disabled = false; btn.textContent = '保存权限';
+  }
+}
+
+// read/write 值解析：true / false 字符串转布尔，其余原样作为表达式
+function parseAclVal(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return v;
+}
+
 export {
   isImage, setStView, setStSort, loadAllFiles, loadStorage, renderStorage, renderPager, stGoPage, resolveUrls, resolveUrl, previewFile,
   scanDirs, deleteSelected, delFileOne, uploadOneFile, uploadToCurrent, selectAllPage,
-  clearSel, resetStorage, resetDeleteBtn, hideBatchBar, clearUrlCache, ST_VIEW_KEY
+  clearSel, resetStorage, resetDeleteBtn, hideBatchBar, clearUrlCache, ST_VIEW_KEY,
+  loadStorageAcl
 };

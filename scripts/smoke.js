@@ -194,6 +194,77 @@ function killServer() {
     const walk = await request('GET', '/api/storage/walk?prefix=');
     check('GET /api/storage/walk → 200', walk.status === 200, 'got ' + walk.status);
 
+    // 10. 数据库索引：读取（含系统 _id_）→ 创建 → 二次读取 → 删除 → 三次读取
+    const ix1 = await request('GET', '/api/collection/indexes?name=demo');
+    check('索引读取 → 200 且含系统索引 _id_', ix1.status === 200 && ix1.json && ix1.json.indexes && ix1.json.indexes.some((x) => x.name === '_id_'), ix1.body);
+    const ix2 = await request('POST', '/api/collection/indexes?name=demo', { indexName: 'smoke_ix', keys: [{ field: 'name', direction: 'asc' }, { field: 'n', direction: 'desc' }], unique: true });
+    check('创建索引 → 200', ix2.status === 200, 'got ' + ix2.status + ' ' + ix2.body);
+    const ix3 = await request('GET', '/api/collection/indexes?name=demo');
+    check('二次读取含新索引', ix3.json && ix3.json.indexes.some((x) => x.name === 'smoke_ix' && x.unique && x.keys.length === 2), ix3.body);
+    const ix4 = await request('DELETE', '/api/collection/indexes?name=demo&index=smoke_ix');
+    check('删除索引 → 200', ix4.status === 200, 'got ' + ix4.status + ' ' + ix4.body);
+    const ix5 = await request('GET', '/api/collection/indexes?name=demo');
+    check('删除后索引列表不含 smoke_ix', ix5.json && ix5.json.indexes && !ix5.json.indexes.some((x) => x.name === 'smoke_ix'), ix5.body);
+
+    // 11. 集合权限（安全规则）：读取 → 改 PRIVATE → CUSTOM → 非法值 400
+    const pm1 = await request('GET', '/api/collection/permission?name=demo');
+    check('集合权限读取 → 200', pm1.status === 200 && pm1.json && typeof pm1.json.acl === 'string', pm1.body);
+    const pm2 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'PRIVATE' });
+    check('改集合权限 PRIVATE → 200', pm2.status === 200, 'got ' + pm2.status + ' ' + pm2.body);
+    const pm3 = await request('GET', '/api/collection/permission?name=demo');
+    check('权限读取回 PRIVATE', pm3.json && pm3.json.acl === 'PRIVATE', pm3.body);
+    const pm4 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'CUSTOM', rule: 'auth.uid != null' });
+    check('改集合权限 CUSTOM 带规则 → 200', pm4.status === 200, 'got ' + pm4.status + ' ' + pm4.body);
+    const pm5 = await request('GET', '/api/collection/permission?name=demo');
+    check('CUSTOM 规则回显', pm5.json && pm5.json.acl === 'CUSTOM' && /auth\.uid/.test(pm5.json.rule || ''), pm5.body);
+    const pm6 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'CUSTOM' });
+    check('CUSTOM 缺规则 → 400', pm6.status === 400, 'got ' + pm6.status);
+    const pm7 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'BOGUS' });
+    check('非法权限值 → 400', pm7.status === 400, 'got ' + pm7.status);
+
+    // 12. 存储 ACL：读取 → 改 ADMINWRITE → 改 CUSTOM 带规则 → 读取 → 非法 400
+    const ac1 = await request('GET', '/api/storage/acl');
+    check('存储 ACL 读取 → 200 且 acl 非空', ac1.status === 200 && ac1.json && !!ac1.json.acl, ac1.body);
+    const ac2 = await request('PUT', '/api/storage/acl', { acl: 'ADMINWRITE' });
+    check('改存储 ACL ADMINWRITE → 200', ac2.status === 200, 'got ' + ac2.status + ' ' + ac2.body);
+    const ac3 = await request('GET', '/api/storage/acl');
+    check('ACL 读取回 ADMINWRITE', ac3.json && ac3.json.acl === 'ADMINWRITE', ac3.body);
+    const ac4 = await request('PUT', '/api/storage/acl', { acl: 'CUSTOM', rule: { read: true, write: 'resource.openid == auth.uid' } });
+    check('改存储 ACL CUSTOM 带规则 → 200', ac4.status === 200, 'got ' + ac4.status + ' ' + ac4.body);
+    const ac5 = await request('GET', '/api/storage/acl');
+    check('CUSTOM ACL 规则回显', ac5.json && ac5.json.acl === 'CUSTOM' && ac5.json.rule && ac5.json.rule.read === true && ac5.json.rule.write === 'resource.openid == auth.uid', ac5.body);
+    const ac6 = await request('PUT', '/api/storage/acl', { acl: 'CUSTOM', rule: { read: true } });
+    check('CUSTOM ACL 缺 write → 400', ac6.status === 400, 'got ' + ac6.status);
+    const ac7 = await request('PUT', '/api/storage/acl', { acl: 'BOGUS' });
+    check('非法 ACL 值 → 400', ac7.status === 400, 'got ' + ac7.status);
+
+    // 13. 云函数：列表 → 详情（含触发器）→ 改配置 → 详情回显 → 调用 → 触发器增删 → 删除函数 → 列表清空
+    const f1 = await request('GET', '/api/functions');
+    check('函数列表 → 200 且含 hello', f1.status === 200 && f1.json && f1.json.functions.some((f) => f.name === 'hello'), f1.body);
+    const f2 = await request('GET', '/api/function?name=hello');
+    check('函数详情 → 200 且含触发器', f2.status === 200 && f2.json && f2.json.info && f2.json.info.runtime && Array.isArray(f2.json.triggers) && f2.json.triggers.some((t) => t.name === 'timer-hello'), f2.body);
+    const f3 = await request('POST', '/api/function/config?name=hello', { timeout: 5, memorySize: 512 });
+    check('改函数配置 → 200', f3.status === 200, 'got ' + f3.status + ' ' + f3.body);
+    const f4 = await request('GET', '/api/function?name=hello');
+    check('配置回显 timeout=5 / memory=512', f4.json && f4.json.info.timeout === 5 && f4.json.info.memory === 512, f4.body);
+    const f5 = await request('POST', '/api/function/invoke?name=hello', { x: 1 });
+    check('调用函数 → 200 且 ok/echo', f5.status === 200 && f5.json && f5.json.ok === true && f5.json.result && f5.json.result.echo && f5.json.result.echo.x === 1, f5.body);
+    check('调用返回日志与耗时', f5.json && typeof f5.json.log === 'string' && f5.json.log.length > 0 && f5.json.duration > 0, f5.body);
+    const f6 = await request('POST', '/api/function/trigger?name=hello', { name: 'smoke_t', type: 'timer', config: '0 0 * * * *' });
+    check('创建触发器 → 200', f6.status === 200, 'got ' + f6.status + ' ' + f6.body);
+    const f7 = await request('GET', '/api/function?name=hello');
+    check('触发器回显 smoke_t', f7.json && f7.json.triggers.some((t) => t.name === 'smoke_t'), f7.body);
+    const f8 = await request('DELETE', '/api/function/trigger?name=hello&trigger=smoke_t');
+    check('删除触发器 → 200', f8.status === 200, 'got ' + f8.status + ' ' + f8.body);
+    const f9 = await request('GET', '/api/function?name=hello');
+    check('删除后触发器不含 smoke_t', f9.json && !f9.json.triggers.some((t) => t.name === 'smoke_t'), f9.body);
+    const f10 = await request('DELETE', '/api/function?name=hello');
+    check('删除函数 → 200', f10.status === 200, 'got ' + f10.status + ' ' + f10.body);
+    const f11 = await request('GET', '/api/functions');
+    check('删除后列表不含 hello', f11.json && !f11.json.functions.some((f) => f.name === 'hello'), f11.body);
+    const f12 = await request('GET', '/api/function?name=hello');
+    check('删除后详情 → 500 报错', f12.status === 500, 'got ' + f12.status);
+
   } catch (e) {
     failures++;
     console.error('FAIL 异常 ' + (e && e.message) + '\n' + (e && e.stack || ''));
