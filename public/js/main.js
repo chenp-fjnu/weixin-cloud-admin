@@ -83,6 +83,24 @@ function initEnvSelect(envsStatus, defaultEnv) {
   if (changed) toast('当前环境：' + cur, 'ok');
 }
 
+// 切换环境时：立即清空当前 Tab 右侧内容并进入加载态，避免旧环境数据短暂残留
+function showActiveTabLoading(tab) {
+  if (tab === 'overview') {
+    const cards = $('#ovCards'); if (cards) cards.innerHTML = '';
+    const sc = $('#ovStorageCards'); if (sc) sc.innerHTML = '';
+    $('#ovLoading').style.display = '';
+    $('#ovBody').style.display = 'none';
+  } else if (tab === 'db') {
+    const csel = $('#dbCollection');
+    if (csel) csel.innerHTML = '<option value="">（切换环境中…）</option>';
+    $('#dbHead').innerHTML = '';
+    $('#dbBody').innerHTML = dbSkeletonRows();
+    $('#dbCount').textContent = '加载中…';
+    $('#dbPageInfo').textContent = '加载中…';
+  }
+  // storage 的加载态由 loadStorage() 内部即时呈现，此处无需重复处理
+}
+
 async function switchEnv(envId, force) {
   if (!envId || (envId === S.env && !force)) return;
   S.env = envId;
@@ -104,8 +122,10 @@ async function switchEnv(envId, force) {
   if (srt) srt.value = 'name';
   stSel = new Set();
   hideBatchBar();
-  loadOverview();
   const tab = S.activeTab || 'overview';
+  // 清空当前 Tab 右侧内容并进入加载态（避免加载完成前仍显示旧环境数据）
+  showActiveTabLoading(tab);
+  loadOverview();
   if (tab === 'db') initDb();
   if (tab === 'storage') loadStorage();
   toast('已切换到环境 ' + envId, 'ok');

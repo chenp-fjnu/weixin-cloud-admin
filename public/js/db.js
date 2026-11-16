@@ -1,5 +1,5 @@
 /* 云端数据管理台 —— 云数据库 Tab + 文档查看/编辑模态框
-   集合下拉、分页/筛选/排序、表格渲染（_id 列 + 行点击 + cloud:// 图片批量临时链接）、文档 CRUD。
+   集合下拉、分页/筛选/排序、表格渲染（业务字段 + 行点击 + cloud:// 图片批量临时链接）、文档 CRUD。
    openCollection 供概览卡片点击跳转调用（见 overview.js）。 */
 'use strict';
 
@@ -96,8 +96,8 @@ function dbSkeletonRows() {
   const nCols = Math.max(3, Math.min(8, (S.db.cols && S.db.cols.length) || 6));
   let rows = '';
   for (let r = 0; r < 6; r++) {
-    let tds = '<td class="id"><span class="skl" style="height:11px;width:72%"></span></td>';
-    for (let c = 1; c < nCols; c++) {
+    let tds = '';
+    for (let c = 0; c < nCols; c++) {
       const w = 38 + ((r * 17 + c * 29) % 58);
       tds += '<td class="val"><span class="skl" style="height:11px;width:' + w + '%"></span></td>';
     }
@@ -215,15 +215,15 @@ function pillFor(field, value) {
 
 function renderDbTable() {
   S.db.cols = fieldColumns(S.db.docs);
-  const totalCols = S.db.cols.length + 2; // _id 列 + 操作列
+  const totalCols = S.db.cols.length + 1; // 操作列
   renderDbChips();
   // 页头副标题：文档总数
   $('#dbCount').textContent = S.db.docs.length ? ('共 ' + fmtNum(S.db.total) + ' 条文档 · 当前集合 ' + S.db.collection) : ('集合 ' + S.db.collection + ' 无文档');
-  // 动态表头：_id + 业务字段（已剔除 _openid 等其余系统字段）+ 操作
+  // 动态表头：业务字段（已剔除 _id / _openid 等系统字段）+ 操作
   // 列头可点击排序：当前排序列高亮并显示方向箭头（▲ 升序 / ▼ 降序）
   const effSort = S.db.sort || pickTimeField(S.db.fieldsSet) || '';
   const effDir = S.db.sortDir;
-  $('#dbHead').innerHTML = '<th class="id">_id</th>' + S.db.cols.map(c => {
+  $('#dbHead').innerHTML = S.db.cols.map(c => {
     const on = effSort === c;
     const arrow = on ? (effDir === 'asc' ? '▲' : '▼') : ''; // ▲ 升序 / ▼ 降序
     return '<th class="sortable' + (on ? ' on' : '') + '" data-col="' + esc(c) + '" title="点击按 ' + esc(c) + ' 排序">' +
@@ -240,19 +240,6 @@ function renderDbTable() {
   const imgRels = [];
   S.db.docs.forEach(d => {
     const tr = document.createElement('tr');
-    // _id 列（只读，点击一键复制）
-    const idTd = document.createElement('td');
-    idTd.className = 'id';
-    idTd.textContent = d._id;
-    idTd.title = '点击复制 _id';
-    idTd.addEventListener('click', (e) => {
-      e.stopPropagation();
-      copyText(d._id).then(
-        () => toast('已复制 _id', 'ok'),
-        () => toast('复制失败', 'err')
-      );
-    });
-    tr.appendChild(idTd);
     S.db.cols.forEach(col => {
       const td = document.createElement('td');
       const pill = pillFor(col, d[col]);

@@ -160,8 +160,12 @@ function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   const btn = $('#themeBtn');
   if (btn) {
-    btn.querySelector('.ti').innerHTML = ic(t === 'dark' ? 'sun' : 'moon');
-    btn.querySelector('.txt').textContent = t === 'dark' ? '浅色模式' : '深色模式';
+    // .ti/.txt 占位符可能因 DOM 变动缺失（如被 initIcons 替换），逐层判空，
+    // 避免单点缺失抛错打断整个启动链（applyTheme 在 bindEvents/loadOverview 之前执行）
+    const ti = btn.querySelector('.ti');
+    if (ti) ti.innerHTML = ic(t === 'dark' ? 'sun' : 'moon');
+    const txt = btn.querySelector('.txt');
+    if (txt) txt.textContent = t === 'dark' ? '浅色模式' : '深色模式';
   }
 }
 function toggleTheme() {
