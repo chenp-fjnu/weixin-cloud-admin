@@ -303,6 +303,10 @@ tr.skltr .skl{display:inline-block;border-radius:99px}
 .ststats .sitem{display:inline-flex;align-items:center;gap:6px;color:var(--ink3)}
 .ststats .sitem svg{width:14px;height:14px}
 .ststats .sitem b{color:var(--ink);font-weight:600}
+/* 分页条（文件列表下方：上一页/下一页 + 页码信息 + 每页条数） */
+.pager{display:flex;gap:9px;align-items:center;flex-wrap:wrap;padding:10px 2px 2px;font-size:12.5px;color:var(--ink2)}
+.pager .pmeta{color:var(--ink3);font-variant-numeric:tabular-nums}
+.pager select{font-size:12.5px;padding:6px 9px}
 /* 批量操作条（选中 >0 时出现，贴底浮层） */
 .batchbar{position:sticky;bottom:14px;display:flex;align-items:center;gap:10px;margin-top:14px;
   padding:10px 14px;background:var(--ink);color:var(--bg);border-radius:var(--radius);

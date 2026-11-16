@@ -1,6 +1,7 @@
 /* 云端数据管理台 —— 云存储 Tab（ES Module）
    目录浏览（图标面包屑）、图片缩略图（批量临时链接 + 缓存）、文件类型图标、
-   目录内筛选/排序、悬停单删、文件预览、多选删除、单文件/拖拽上传、子目录扫描聚合。 */
+   目录内筛选/排序、分页（每页条数可选）、悬停单删、文件预览、多选删除、
+   单文件/拖拽上传、子目录扫描聚合。 */
 
 import { $, $$, S, apiGet, apiPost, apiUpload, toast, esc, ic, fmtSize, fmtDate, showModal, hideModal } from './common.js';
 
@@ -31,8 +32,15 @@ function fileIcon(name) {
   if (['js', 'ts', 'jsx', 'tsx', 'json', 'html', 'css', 'py', 'sh'].includes(e)) return 'code';
   return 'file';
 }
-// 当前筛选后的文件列表
+// 当前文件集合：'all' 视图返回全目录平铺列表（已按修改时间倒序，见 loadAllFiles），
+// 其余视图返回当前目录列表并做筛选/排序
 function stFiltered() {
+  if (S.st.sort === 'all') {
+    const kw = (S.st.filter || '').trim().toLowerCase();
+    let files = S.st.allFiles || [];
+    if (kw) files = files.filter(f => f.name.toLowerCase().includes(kw));
+    return files;
+  }
   const kw = (S.st.filter || '').trim().toLowerCase();
   let files = S.st.files;
   if (kw) files = files.filter(f => f.name.toLowerCase().includes(kw));
@@ -42,8 +50,35 @@ function stFiltered() {
   return files;
 }
 
+// 全目录平铺视图：递归扫描当前环境全部文件，按修改时间倒序（新→旧）。
+// 云端文件数通常远低于 5000 上限；超限时截断并标注（allTruncated）。
+async function loadAllFiles() {
+  const base = S.st.prefix || '';
+  S.st.allLoadedAt = Date.now();
+  S.st.allTruncated = false;
+  try {
+    const r = await apiGet('/api/storage/walk?prefix=' + encodeURIComponent(base) + '&max=5000');
+    if (S.st.sort === 'all') {
+      S.st.allFiles = (r.files || []).slice().sort((a, b) => (b.lastModified || '') > (a.lastModified || '') ? 1
+        : (b.lastModified || '') < (a.lastModified || '') ? -1 : a.name.localeCompare(b.name, 'zh'));
+      S.st.allTruncated = (r.count || 0) >= 5000;
+      renderStorage();
+    }
+  } catch (e) {
+    if (S.st.sort === 'all') toast('全目录扫描失败：' + e.message, 'err');
+  }
+}
+
+// 排序方式切换（name/size/date/all）；'all' 需拉取全目录数据；切换即回第一页
+function setStSort(v) {
+  S.st.sort = v;
+  S.st.page = 1;
+  if (v === 'all') loadAllFiles(); else renderStorage();
+}
+
 async function loadStorage() {
   stSel = new Set();
+  S.st.page = 1; // 切目录/刷新即回第一页
   const loading = $('#stLoading'), body = $('#stBody');
   loading.style.display = ''; body.style.display = 'none';
   $('#stScanPanel').style.display = 'none';
@@ -58,6 +93,7 @@ async function loadStorage() {
   } catch (e) {
     loading.style.display = 'none';
     body.style.display = 'block';
+    const pg = $('#stPager'); if (pg) pg.style.display = 'none';
     S.st.files = []; S.st.dirs = []; // 清空陈旧数据，避免工具栏残留旧选择计数
     $('#stStats').innerHTML = '';
     $('#stGrid').innerHTML = '<div class="empty">列举失败：' + esc(e.message) + '</div>';
@@ -90,24 +126,32 @@ function renderCrumbs() {
 
 function renderStorage() {
   const grid = $('#stGrid'); grid.innerHTML = '';
+  const allMode = S.st.sort === 'all';
   const { dirs } = S.st;
   const files = stFiltered();
-  renderStats(dirs, files);
+  renderStats(dirs, files, allMode);
   if (!dirs.length && !files.length) {
-    grid.innerHTML = '<div class="empty">' + (S.st.filter ? '（无匹配文件，请调整筛选条件）' : '（此目录为空）') + '</div>';
+    const pg = $('#stPager'); if (pg) pg.style.display = 'none';
+    grid.innerHTML = '<div class="empty">' + (S.st.filter ? '（无匹配文件，请调整筛选条件）'
+      : (allMode ? '（全目录未发现文件）' : '（此目录为空）')) + '</div>';
     updateSelCount();
     return;
   }
-  const MAX_RENDER = 800; // 单层文件过多时限制 DOM 量，防止万级文件冻结页面
-  const shown = files.slice(0, MAX_RENDER);
+  // 分页：每页 N 个文件（目录项始终整层展示，不占页码），页码越界自动收敛
+  const pages = Math.max(1, Math.ceil(files.length / S.st.pageSize));
+  if (S.st.page > pages) S.st.page = pages;
+  const start = (S.st.page - 1) * S.st.pageSize;
+  const shown = files.slice(start, start + S.st.pageSize);
   const listMode = stView === 'list';
-  dirs.forEach(d => {
-    const name = d.replace(/\/+$/, '').split('/').filter(Boolean).pop() || '目录';
-    const it = document.createElement('div'); it.className = 'fitem dir' + (listMode ? ' row' : '');
-    it.innerHTML = '<div class="thumb">' + ic('folderOpen') + '</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
-    it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
-    grid.appendChild(it);
-  });
+  if (!allMode) {
+    dirs.forEach(d => {
+      const name = d.replace(/\/+$/, '').split('/').filter(Boolean).pop() || '目录';
+      const it = document.createElement('div'); it.className = 'fitem dir' + (listMode ? ' row' : '');
+      it.innerHTML = '<div class="thumb">' + ic('folderOpen') + '</div><div class="nm">' + esc(name) + '</div><div class="meta">目录</div>';
+      it.addEventListener('click', () => { S.st.prefix = d; loadStorage(); });
+      grid.appendChild(it);
+    });
+  }
   shown.forEach(f => {
     const base = f.name.split('/').pop();
     const it = document.createElement('div'); it.className = 'fitem' + (listMode ? ' row' : '');
@@ -115,7 +159,9 @@ function renderStorage() {
     const thumb = document.createElement('div'); thumb.className = 'thumb';
     if (isImage(f.name)) { thumb.innerHTML = '<span class="spin"></span>'; }
     else thumb.innerHTML = ic(fileIcon(f.name));
-    const nm = document.createElement('div'); nm.className = 'nm'; nm.textContent = base;
+    const nm = document.createElement('div'); nm.className = 'nm';
+    // 全目录视图：文件名后附所属目录，便于定位来源（目录浏览视图只显示文件名）
+    nm.textContent = allMode ? (base + '  ·  ' + f.name.slice(0, f.name.length - base.length).replace(/\/+$/, '')) : base;
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = fmtSize(f.size) + (f.lastModified ? ' · ' + fmtDate(f.lastModified) : '');
     // 悬停操作：预览 + 单删
@@ -136,13 +182,14 @@ function renderStorage() {
     if (stSel.has(f.name)) it.classList.add('sel');
     grid.appendChild(it);
   });
-  if (files.length > MAX_RENDER) {
+  if (allMode && S.st.allTruncated) {
     const hint = document.createElement('div');
-    hint.className = 'hint';
+    hint.className = 'hint warnhint';
     hint.style.gridColumn = '1 / -1';
-    hint.textContent = '本目录文件较多，仅渲染前 ' + MAX_RENDER + ' 个（共 ' + files.length + ' 个）；如需处理其余文件，请进入子目录或用「扫描子目录」定位。';
+    hint.textContent = '文件数超过 5000 个，已按修改时间倒序仅展示最新 5000 个；更早的文件请用目录浏览逐层查看。';
     grid.appendChild(hint);
   }
+  renderPager(files.length);
   // 本页所有图片一次性批量取临时 URL（旧实现每图一个请求，20 图 = 20 次往返）
   if (shown.some(f => isImage(f.name))) {
     let seq = ++stUrlSeq;
@@ -164,12 +211,19 @@ function renderStorage() {
   updateSelCount();
 }
 
-// 目录统计行：N 个目录 · M 个文件 · 合计大小（仅统计当前目录直属项，不含子目录聚合）
-function renderStats(dirs, files) {
+// 统计行：目录浏览视图 = N 个目录 · M 个文件 · 合计大小（仅当前目录直属项）；
+// 全目录视图 = M 个文件（全部目录）· 合计大小（上限 5000 截断时标注）
+function renderStats(dirs, files, allMode) {
   const el = $('#stStats');
   if (!el) return;
   if (!dirs.length && !files.length) { el.innerHTML = ''; return; }
   const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
+  if (allMode) {
+    el.innerHTML = '<span class="sitem">' + ic('scan') + '<b>全部目录</b> · 按修改时间倒序</span>'
+      + '<span class="sitem">' + ic('file') + '<b>' + files.length + '</b> 个文件' + (S.st.allTruncated ? '（截断）' : '') + '</span>'
+      + (files.length ? '<span class="sitem">' + ic('chart') + '合计 <b>' + fmtSize(totalSize) + '</b></span>' : '');
+    return;
+  }
   el.innerHTML = '<span class="sitem">' + ic('folderOpen') + '<b>' + dirs.length + '</b> 个目录</span>'
     + '<span class="sitem">' + ic('file') + '<b>' + files.length + '</b> 个文件</span>'
     + (files.length ? '<span class="sitem">' + ic('chart') + '合计 <b>' + fmtSize(totalSize) + '</b></span>' : '');
@@ -194,7 +248,7 @@ function toggleSel(name) {
   updateSelCount();
 }
 function selectAllPage() {
-  // 「本页」= 当前实际渲染的文件（受 MAX_RENDER=800 上限约束）；
+  // 「本页」= 当前页实际渲染的文件（分页后每页 ≤ pageSize 个）；
   // 旧实现选中 S.st.files 全量——渲染 800 个、可能选中几千个，删除确认框又只预览前 20 个，
   // 一点删除就是全目录删除。现只选已渲染项，语义与所见一致。
   const rendered = new Set();
@@ -207,6 +261,8 @@ function selectAllPage() {
 function resetStorage() {
   stSel.clear();
   S.st.prefix = ''; S.st.loadedAt = 0; S.st.filter = ''; S.st.sort = 'name';
+  S.st.page = 1; S.st.pageSize = 60;
+  S.st.allFiles = []; S.st.allTruncated = false; S.st.allLoadedAt = 0;
   stUrlSeq++; // 使在途缩略图 URL 请求过期
   clearUrlCache();
 }
@@ -219,6 +275,46 @@ function updateSelCount() {
   const c = $('#stDelete .stselcount'); if (c) c.textContent = stSel.size;
   $('#stDelete').disabled = stSel.size === 0;
   if (stSel.size > 0) showBatchBar(); else hideBatchBar();
+}
+
+// 分页条：上一页/下一页 + 「第 a–b / 共 N 个 · 第 X / Y 页」+ 每页条数下拉
+function renderPager(total) {
+  const box = $('#stPager');
+  if (!box) return;
+  if (!total || Math.ceil(total / S.st.pageSize) <= 1) { box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  box.innerHTML = '';
+  const pages = Math.max(1, Math.ceil(total / S.st.pageSize));
+  const start = (S.st.page - 1) * S.st.pageSize + 1;
+  const end = Math.min(S.st.page * S.st.pageSize, total);
+  const mkBtn = (label, disabled, fn) => {
+    const b = document.createElement('button');
+    b.className = 'btn sm'; b.textContent = label; b.disabled = disabled;
+    b.addEventListener('click', fn);
+    box.appendChild(b);
+  };
+  mkBtn('‹ 上一页', S.st.page <= 1, () => stGoPage(S.st.page - 1));
+  mkBtn('下一页 ›', S.st.page >= pages, () => stGoPage(S.st.page + 1));
+  const info = document.createElement('span');
+  info.className = 'pmeta';
+  info.textContent = '第 ' + start + '–' + end + ' / 共 ' + total + ' 个 · 第 ' + S.st.page + ' / ' + pages + ' 页';
+  box.appendChild(info);
+  const sp = document.createElement('span'); sp.className = 'spacer'; box.appendChild(sp);
+  const sel = document.createElement('select');
+  sel.title = '每页显示';
+  [30, 60, 100, 200].forEach(n => {
+    const o = document.createElement('option');
+    o.value = String(n); o.textContent = n + ' 个/页';
+    if (n === S.st.pageSize) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', () => { S.st.pageSize = +sel.value; S.st.page = 1; renderStorage(); });
+  box.appendChild(sel);
+}
+function stGoPage(p) {
+  const pages = Math.max(1, Math.ceil(stFiltered().length / S.st.pageSize));
+  S.st.page = Math.min(Math.max(1, p), pages);
+  renderStorage();
 }
 
 async function resolveUrl(cloudPath) {
@@ -367,7 +463,9 @@ function deleteSelected() {
 }
 function delFileOne(path) {
   if (_delBusySt) return;
-  if (!S.st.files.some(f => f.name === path)) return;
+  // all 视图下当前文件在 allFiles 中，S.st.files 只是当前目录直属项，不能据此判存在
+  const cur = S.st.sort === 'all' ? (S.st.allFiles || []) : S.st.files;
+  if (!cur.some(f => f.name === path)) return;
   if (!confirm('确认删除云文件 ' + path + ' ？此操作不可撤销。')) return;
   doDelete([path]);
 }
@@ -399,7 +497,7 @@ async function uploadToCurrent() {
 
 // ---------- 模块导出 ----------
 export {
-  isImage, setStView, loadStorage, renderStorage, resolveUrls, resolveUrl, previewFile,
+  isImage, setStView, setStSort, loadAllFiles, loadStorage, renderStorage, renderPager, stGoPage, resolveUrls, resolveUrl, previewFile,
   scanDirs, deleteSelected, delFileOne, uploadOneFile, uploadToCurrent, selectAllPage,
   clearSel, resetStorage, resetDeleteBtn, hideBatchBar, clearUrlCache, ST_VIEW_KEY
 };

@@ -5,7 +5,7 @@
 import { $, $$, S, apiGet, apiPost, toast, ic, initIcons, applyTheme, toggleTheme, THEME_LS_KEY, ENV_LS_KEY, copyText } from './common.js';
 import { loadOverview } from './overview.js';
 import { initDb, resetDb, dbSkeletonRows, loadDb, openDoc, closeModals, setDocMode, saveDoc, fmtDocBtn, updateDirty, docDirty } from './db.js';
-import { loadStorage, resetStorage, hideBatchBar, clearSel, selectAllPage, deleteSelected, scanDirs, setStView, resetDeleteBtn, uploadOneFile, uploadToCurrent, ST_VIEW_KEY } from './storage.js';
+import { loadStorage, renderStorage, resetStorage, hideBatchBar, clearSel, selectAllPage, deleteSelected, scanDirs, setStView, setStSort, resetDeleteBtn, uploadOneFile, uploadToCurrent, ST_VIEW_KEY } from './storage.js';
 import { loadEnvironments, openEnvModal, saveEnvModal, testEnvModal } from './settings.js';
 
 // ---------- 顶部标题 ----------
@@ -252,9 +252,9 @@ function bindEvents() {
   // 批量操作条（选中 >0 时出现）
   $('#stBatchUnsel').addEventListener('click', clearSel);
   $('#stBatchDel').addEventListener('click', deleteSelected);
-  // 目录内筛选 / 排序（即时生效，不再重复请求后端）
-  $('#stFilter').addEventListener('input', function () { S.st.filter = this.value; renderStorage(); });
-  $('#stSort').addEventListener('change', function () { S.st.sort = this.value; renderStorage(); });
+  // 目录内筛选 / 排序（即时生效，不再重复请求后端；'all' 全目录视图需拉取全量数据）
+  $('#stFilter').addEventListener('input', function () { S.st.filter = this.value; S.st.page = 1; renderStorage(); });
+  $('#stSort').addEventListener('change', function () { setStSort(this.value); });
 
   // 环境配置
   $('#envAdd').addEventListener('click', () => openEnvModal(''));
