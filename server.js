@@ -17,14 +17,10 @@
  *   - 腾讯云密钥（secretId/secretKey）只存在于本进程环境变量，永不下发到浏览器。
  *   - 浏览器 ↔ 本服务走同源 http，本服务再代去 CloudBase，前端零凭证。
  *
- * 环境与凭证来源（优先级：config/environments.json > .env 播种 > 页面「环境配置」随时增删改）：
- *   - 首次启动且无 config/environments.json 时，用 .env 播种：
- *       TCB_ENV_ID     默认云环境 ID
- *       TCB_ENV_IDS    可切换的云环境列表（逗号分隔）
- *       TCB_SECRET_ID / TCB_SECRET_KEY       第 1 个环境的腾讯云凭证
- *       TCB_SECRET_ID_N / TCB_SECRET_KEY_N  第 N 个环境的独立凭证（跨账号场景）
- *   - 之后以 config/environments.json 为准，页面「环境配置」页可增 / 删 / 改 / 测 / 设默认。
- *   - config/ 与 .env 均不入 git（见 .gitignore）。
+ * 环境与凭证来源：
+ *   - config/environments.json（页面「环境配置」页可随时增删改，保存即时生效）。
+ *   - 首次启动且无该文件时允许空列表启动，由页面添加环境。
+ *   - config/ 不入 git（见 .gitignore）。
  *
  * 其它配置：
  *   ADMIN_PORT     端口（默认 8787）
@@ -36,34 +32,22 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 // ============ 配置 ============
-function loadDotEnv() {
-  const file = path.join(__dirname, '.env');
-  if (!fs.existsSync(file)) return;
-  const text = fs.readFileSync(file, 'utf8');
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (key && !(key in process.env)) process.env[key] = val;
-  }
-}
-loadDotEnv();
-
 // ============ 多环境注册表（可页面增删改，持久化到 config/environments.json） ============
-// 启动时：若存在 config/environments.json 则以其为准；否则用 .env（TCB_ENV_IDS /
-// TCB_SECRET_ID[_N]）播种初始列表并落盘。之后页面「环境配置」页的增删改全部写回该文件。
+// 启动时：若存在 config/environments.json 则以其为准；否则空列表启动（由页面添加）。
 // ADMIN_CONFIG_DIR 可覆盖配置目录（smoke 脚本用临时目录隔离，避免触碰真实配置）
 const CONFIG_DIR = process.env.ADMIN_CONFIG_DIR || path.join(__dirname, 'config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'environments.json');
+// 审计日志：append-only JSONL（config/audit.jsonl），记录文档/文件/环境变更操作，便于排查与合规追溯。
+const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.jsonl');
+function audit(action, envId, target, detail) {
+  try {
+    fs.appendFileSync(AUDIT_FILE, JSON.stringify({ at: new Date().toISOString(), action, envId, target, detail: detail || '' }) + '\n');
+  } catch (e) { /* 审计写入失败不阻断主流程 */ }
+}
 const ENV_ID_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const _envs = { defaultId: '', list: [] }; // list: [{ envId, secretId, secretKey }]
 
@@ -82,22 +66,6 @@ function persistConfig() {
   } catch (e) { console.error('保存环境配置失败：' + (e.message || e)); }
 }
 
-// 首次启动且无 config 文件时，用 .env 播种（兼容旧配置）
-function seedFromEnv() {
-  const defId = (process.env.TCB_ENV_ID || '').trim();
-  let envIds = (process.env.TCB_ENV_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (defId && !envIds.includes(defId)) envIds.unshift(defId);
-  const baseId = process.env.TCB_SECRET_ID || '';
-  const baseKey = process.env.TCB_SECRET_KEY || '';
-  _envs.list = envIds.map((id, idx) => ({
-    envId: id,
-    secretId: (idx > 0 && process.env['TCB_SECRET_ID_' + (idx + 1)]) || baseId,
-    secretKey: (idx > 0 && process.env['TCB_SECRET_KEY_' + (idx + 1)]) || baseKey
-  }));
-  _envs.defaultId = defId || (_envs.list.length ? _envs.list[0].envId : '');
-  persistConfig();
-}
-
 function loadConfig() {
   if (fs.existsSync(CONFIG_FILE)) {
     try {
@@ -108,11 +76,9 @@ function loadConfig() {
       if (!_envs.list.length) _envs.defaultId = '';
       return;
     } catch (e) {
-      console.error('读取环境配置失败，回落到 .env 播种：' + (e.message || e));
+      console.error('读取环境配置失败，将以空列表启动（请到「环境配置」页添加环境）：' + (e.message || e));
     }
   }
-  // 无有效 config：.env 有则播种；.env 也空则允许空列表启动（由页面添加）
-  if ((process.env.TCB_ENV_ID || '').trim() || (process.env.TCB_ENV_IDS || '').trim()) seedFromEnv();
 }
 loadConfig();
 
@@ -146,7 +112,16 @@ function requireSdk(mod) {
   try { return require(mod); }
   catch (e) { throw new AppError('未安装 ' + mod + '，请先在本目录执行 npm install', 'SDK_MISSING'); }
 }
+// 内存 Mock（MOCK_CLOUDBASE=1）：smoke / e2e 测试用，零网络零凭证；
+// 凭证缺失也不报错——mock 直接返回假数据。
+const MOCK_MODE = process.env.MOCK_CLOUDBASE === '1';
+const _mock = MOCK_MODE ? require('./scripts/mock-cloudbase') : null;
 function getClient(envId) {
+  if (MOCK_MODE) {
+    let c = _clients.get(envId);
+    if (!c) { c = { tcb: _mock.client(envId), manager: null }; _clients.set(envId, c); }
+    return c;
+  }
   const s = assertSecrets(envId);
   let c = _clients.get(envId);
   if (!c) {
@@ -159,10 +134,13 @@ function getClient(envId) {
 function getManager(envId) {
   const c = getClient(envId);
   if (!c.manager) {
-    const s = secretsFor(envId);
-    const M = requireSdk('@cloudbase/manager-node');
-    const Ctor = M.default || M;
-    c.manager = new Ctor({ secretId: s.id, secretKey: s.key, envId });
+    if (MOCK_MODE) { c.manager = _mock.manager(envId); }
+    else {
+      const s = secretsFor(envId);
+      const M = requireSdk('@cloudbase/manager-node');
+      const Ctor = M.default || M;
+      c.manager = new Ctor({ secretId: s.id, secretKey: s.key, envId });
+    }
   }
   return c.manager;
 }
@@ -278,7 +256,7 @@ async function storageDelete(cloudPaths, envId) {
 }
 
 async function storageUpload(cloudPath, buffer, envId) {
-  const app = getClient(envId);
+  const app = getClient(envId).tcb; // uploadFile 在 SDK app 实例上（wrapper 是 {tcb, manager} 容器）
   const r = await app.uploadFile({ cloudPath: cloudPath, fileContent: buffer });
   return { fileID: (r && r.fileID) || '' };
 }
@@ -319,7 +297,24 @@ function normCloudPath(p) {
 }
 
 // ============ 数据库操作 ============
+// count 二级缓存（5 分钟）：概览 fresh 重算时 N 个集合各发一次 count 请求；
+// 文档增删改后精确失效对应集合，读路径（/api/collection 翻页、筛选）不受影响。
+const _countCache = new Map(); // envId|name -> { at, total }
+const COUNT_TTL_MS = 5 * 60 * 1000;
+function invalidateCountCache(envId, name) {
+  if (name) _countCache.delete(envId + '|' + name);
+  else for (const k of _countCache.keys()) if (k.startsWith(envId + '|')) _countCache.delete(k);
+}
 async function collectionCount(envId, name, filter) {
+  if (filter) return countRaw(envId, name, filter); // 带筛选的 count 不参与缓存
+  const key = envId + '|' + name;
+  const hit = _countCache.get(key);
+  if (hit && Date.now() - hit.at < COUNT_TTL_MS) return hit.total;
+  const total = await countRaw(envId, name, null);
+  _countCache.set(key, { at: Date.now(), total });
+  return total;
+}
+async function countRaw(envId, name, filter) {
   let c = db(envId).collection(name);
   if (filter) c = c.where(filter);
   const r = await c.count();
@@ -358,6 +353,41 @@ async function listCollectionNames(envId) {
 }
 
 // ============ HTTP 工具 ============
+// 文档指纹（乐观锁 etag）：日期值归一化 → 键序稳定序列化 → SHA-1 前 16 位。
+// 归一化把 Date 实例 / {$date} 包装 / 带时区 ISO 串统一为 {$date: ms}，规则与
+// reviveDateValues 的还原条件完全镜像——「库里当前文档」与「PUT 提交的文档」
+// 只要用户没动日期字段，就必然落在同一规范形，指纹才可比。
+// CloudBase 文档无内置版本号，双页/双人同编时靠它让后保存者拿到 409 而不是静默覆盖。
+function canonDate(v, key) {
+  if (v instanceof Date) return { $date: v.getTime() };
+  if (v && typeof v === 'object' && !Array.isArray(v) && v.$date != null && typeof v.$date === 'number') return { $date: v.$date };
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (TZ_SUFFIX_RE.test(s) || (timeSemanticsField(key) && /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(s))) {
+      const t = new Date(s).getTime();
+      if (!isNaN(t)) return { $date: t };
+    }
+  }
+  return undefined; // 非日期值 → 走普通路径
+}
+function canonicalValue(v, key) {
+  if (v === null || typeof v !== 'object') return v;
+  const d = canonDate(v, key);
+  if (d !== undefined) return d;
+  if (Array.isArray(v)) return v.map((x, i) => canonicalValue(x, key));
+  const out = {};
+  for (const k of Object.keys(v).sort()) out[k] = canonicalValue(v[k], k);
+  return out;
+}
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+}
+function docFingerprint(doc) {
+  if (!doc) return '';
+  return crypto.createHash('sha1').update(stableStringify(canonicalValue(doc, ''))).digest('hex').slice(0, 16);
+}
 // 凭证脱敏：只暴露前 6 位 + 后 4 位，中间以 … 代替
 function maskSecret(s) {
   s = s || '';
@@ -465,6 +495,7 @@ const handlers = {
     _envs.list.push({ envId, secretId, secretKey });
     if (!_envs.defaultId || (body && body.makeDefault)) _envs.defaultId = envId;
     persistConfig();
+    audit('env.add', envId, '', 'default=' + (_envs.defaultId === envId));
     return sendJson(res, 200, { ok: true, envId, defaultEnvId: defaultEnvId() });
   },
 
@@ -488,6 +519,7 @@ const handlers = {
     if (body.makeDefault) _envs.defaultId = cur.envId;
     invalidateClient(newId || cur.envId);
     persistConfig();
+    audit('env.edit', cur.envId, '', 'renamed=' + (newId !== cur.envId));
     return sendJson(res, 200, { ok: true, envId: cur.envId, defaultEnvId: defaultEnvId() });
   },
 
@@ -499,6 +531,7 @@ const handlers = {
     invalidateClient(envId);
     if (_envs.defaultId === envId) _envs.defaultId = _envs.list.length ? _envs.list[0].envId : '';
     persistConfig();
+    audit('env.delete', envId, '');
     return sendJson(res, 200, { ok: true, defaultEnvId: defaultEnvId() });
   },
 
@@ -525,10 +558,15 @@ const handlers = {
     }
     if (!sid || !skey) return sendError(res, 400, '该环境尚无已保存凭证：请先填入 SecretId / SecretKey');
     try {
-      const M = requireSdk('@cloudbase/manager-node');
-      const Ctor = M.default || M;
-      const m = new Ctor({ secretId: sid, secretKey: skey, envId: envId });
-      const r = await m.database.listCollections({ MgoLimit: 1 });
+      let r;
+      if (MOCK_MODE) {
+        r = await _mock.manager(envId).database.listCollections({ MgoLimit: 1 });
+      } else {
+        const M = requireSdk('@cloudbase/manager-node');
+        const Ctor = M.default || M;
+        const m = new Ctor({ secretId: sid, secretKey: skey, envId: envId });
+        r = await m.database.listCollections({ MgoLimit: 1 });
+      }
       const n = (r && (r.Collections || r.collections)) || [];
       return sendJson(res, 200, { ok: true, message: '凭证有效，可访问环境（集合 ' + (Array.isArray(n) ? n.length : 0) + ' 个起）' });
     } catch (e) {
@@ -604,7 +642,8 @@ const handlers = {
     try {
       const r = await db(envId).collection(name).doc(id).get();
       const doc = (r && (r.data || r.record)) || null;
-      return sendJson(res, 200, { doc: Array.isArray(doc) ? (doc[0] || null) : doc });
+      // etag：打开文档时的内容指纹；保存时回传，服务端比对检测并发修改
+      return sendJson(res, 200, { doc: Array.isArray(doc) ? (doc[0] || null) : doc, etag: docFingerprint(Array.isArray(doc) ? (doc[0] || null) : doc) });
     } catch (e) { return sendError(res, 500, e.message); }
   },
 
@@ -619,7 +658,10 @@ const handlers = {
     delete doc._id; // 新建不允许指定 _id
     try {
       const r = await db(envId).collection(name).add(doc);
-      return sendJson(res, 200, { ok: true, id: (r && (r._id || r.id)) || '' });
+      const id = (r && (r._id || r.id)) || '';
+      invalidateCountCache(envId, name);
+      audit('doc.add', envId, name, 'id=' + id);
+      return sendJson(res, 200, { ok: true, id });
     } catch (e) { return sendError(res, 500, e.message); }
   },
 
@@ -633,12 +675,25 @@ const handlers = {
     try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
     if (!body || typeof body !== 'object' || Array.isArray(body)) return sendError(res, 400, '请求体须为 JSON 对象');
     const doc = Object.assign({}, body);
+    const sentEtag = doc.$etag; // 并发锁：客户端回传打开时的 etag（保存前剔除，不落库）
+    delete doc.$etag;
     delete doc._id; // 整包替换语义（set）：_id 不可变更
     try {
+      // 乐观锁：重读当前文档比对指纹。与打开时的 etag 不一致 = 期间被改过（或已删除）→ 409，
+      // 由前端让用户重载后再存，而不是静默整包覆盖他人修改。
+      if (sentEtag) {
+        const cur = await db(envId).collection(name).doc(id).get();
+        const curDoc = (cur && (cur.data || cur.record)) || null;
+        if (docFingerprint(Array.isArray(curDoc) ? (curDoc[0] || null) : curDoc) !== sentEtag) {
+          return sendError(res, 409, '文档已被其他修改覆盖（保存期间内容已变化）：请重新打开文档，核对后再保存');
+        }
+      }
       // 用 set() 整体替换，与前端「编辑整包 JSON」的所见即所得一致；
       // 原 update() 是部分更新，删字段不生效且易留残留字段。
       // set 前还原被 JSON 序列化退化的 Date 值（见 reviveDateValues 说明）。
       await db(envId).collection(name).doc(id).set(reviveDateValues(doc, ''));
+      invalidateCountCache(envId, name);
+      audit('doc.update', envId, name, 'id=' + id);
       return sendJson(res, 200, { ok: true });
     } catch (e) { return sendError(res, 500, e.message); }
   },
@@ -651,6 +706,8 @@ const handlers = {
     if (!id) return sendError(res, 400, '缺少文档 _id');
     try {
       await db(envId).collection(name).doc(id).remove();
+      invalidateCountCache(envId, name);
+      audit('doc.delete', envId, name, 'id=' + id);
       return sendJson(res, 200, { ok: true });
     } catch (e) { return sendError(res, 500, e.message); }
   },
@@ -683,8 +740,11 @@ const handlers = {
     try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
     const fileIDs = Array.isArray(body && body.fileIDs) ? body.fileIDs : [];
     if (!fileIDs.length) return sendError(res, 400, '缺少 fileIDs');
-    try { return sendJson(res, 200, await storageDelete(fileIDs, envId)); }
-    catch (e) { return sendError(res, 500, e.message); }
+    try {
+      const r = await storageDelete(fileIDs, envId);
+      audit('file.delete', envId, '', 'n=' + fileIDs.length);
+      return sendJson(res, 200, r);
+    } catch (e) { return sendError(res, 500, e.message); }
   },
 
   'POST /api/storage/upload': async (req, res, params) => {
@@ -693,11 +753,23 @@ const handlers = {
     try { cloudPath = normCloudPath(params.get('cloudPath')); }
     catch (e) { return sendError(res, 400, e.message); }
     const limit = parseInt(process.env.ADMIN_UPLOAD_LIMIT || String(20 * 1024 * 1024), 10);
+    // 同名 409 预检：上传语义是覆盖，但管理台默认拒绝——防误覆盖线上文件；
+    // 需要覆盖时先删除旧文件（列表页已有删除操作），不单独提供 force 参数。
+    try {
+      const dir = cloudPath.includes('/') ? cloudPath.slice(0, cloudPath.lastIndexOf('/') + 1) : '';
+      const one = await storageListOneLevel(dir, envId);
+      if (one.files.some((f) => f.name === cloudPath)) {
+        return sendError(res, 409, '文件已存在：' + cloudPath + '（如需覆盖请先删除旧文件）');
+      }
+    } catch (e) { /* 列举失败不阻断上传：仅失去预检，保留原有覆盖能力 */ }
     let buf;
     try { buf = await readBody(req, limit); } catch (e) { return sendError(res, 400, e.message); }
     if (!buf || !buf.length) return sendError(res, 400, '文件内容为空');
-    try { return sendJson(res, 200, await storageUpload(cloudPath, buf, envId)); }
-    catch (e) { return sendError(res, 500, e.message); }
+    try {
+      const r = await storageUpload(cloudPath, buf, envId);
+      audit('file.upload', envId, cloudPath, 'bytes=' + buf.length);
+      return sendJson(res, 200, r);
+    } catch (e) { return sendError(res, 500, e.message); }
   },
 
   'GET /api/storage/walk': async (req, res, params) => {
@@ -719,8 +791,10 @@ const server = http.createServer(async (req, res) => {
     const method = req.method.toUpperCase();
 
     if (ADMIN_TOKEN && pathname.startsWith('/api')) {
+      // 常量时间比较，避免时序侧信道（TOKEN 为启动时固定的短字符串，差异微小但零成本防御）
       const tok = req.headers['x-admin-token'] || u.searchParams.get('token');
-      if (tok !== ADMIN_TOKEN) return sendError(res, 401, '未授权：x-admin-token 不匹配');
+      const a = Buffer.from(String(tok || '')), b = Buffer.from(ADMIN_TOKEN);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return sendError(res, 401, '未授权：x-admin-token 不匹配');
     }
 
     if (pathname.startsWith('/api/')) {
@@ -752,10 +826,10 @@ process.on('uncaughtException', (err) => {
 
 // 启动前校验：非本机回环地址且未配置 ADMIN_TOKEN 时拒绝启动，避免误配置对外暴露导致裸奔
 {
-  const loopback = HOST === '127.0.0.1' || HOST === 'localhost' || HOST === '::1' || HOST === '0:0:0:0:0:0:0:1';
+  const loopback = ['127.0.0.1', 'localhost', '::1', '0:0:0:0:0:0:0:1', '[::1]'].includes(HOST);
   if (!ADMIN_TOKEN && !loopback) {
     console.error('==========================================================');
-    console.error('  [FATAL] ADMIN_HOST=' + HOST + '（非本机回环）但未配置 ADMIN_TOKEN');
+    console.error('  [FATAL] ADMIN_HOST=' + HOST + '（非本机回环，含 0.0.0.0 监听全部网卡）但未配置 ADMIN_TOKEN');
     console.error('  对外暴露会让任意访问者增删改云数据。请先设置 ADMIN_TOKEN，');
     console.error('  或将 ADMIN_HOST 改回 127.0.0.1。');
     console.error('==========================================================');

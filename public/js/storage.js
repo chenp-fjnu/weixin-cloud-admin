@@ -240,16 +240,23 @@ function resolveUrls(cloudPaths) {
   const need = cloudPaths.filter(p => !_urlFresh(p));
   const chunks = [];
   for (let i = 0; i < need.length; i += 50) chunks.push(need.slice(i, i + 50));
+  let failedBatches = 0;
   return Promise.all(chunks.map(chunk => {
     if (!chunk.length) return Promise.resolve({});
     // 后端已改为 POST（URL 过长会被截断，且避免 100+ 字符的 query 串）
-    return apiPost('/api/storage/urls', { fileIDs: chunk }).then(r => r.urls || {}).catch(() => ({}));
+    return apiPost('/api/storage/urls', { fileIDs: chunk }).then(r => r.urls || {}).catch(() => {
+      failedBatches++;
+      return {};
+    });
   })).then(results => {
     const fresh = {};
     results.forEach(m => Object.assign(fresh, m));
     Object.entries(fresh).forEach(([k, v]) => { if (v) _urlCache.set(k, { url: v, at: Date.now() }); });
     const map = {};
     cloudPaths.forEach(p => { const u = _urlFresh(p); if (u) map[p] = u; });
+    // 批次失败不再静默吞掉：明确提示哪些图可能没有预览（原实现 catch 后 {}，
+    // 用户只看到占位图标，无法区分「无权限」还是「网络失败」）
+    if (failedBatches) toast('部分临时链接获取失败（' + failedBatches + ' 批），相关图片暂无法预览，可点「刷新」重试', 'err');
     return map;
   });
 }

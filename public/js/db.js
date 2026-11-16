@@ -212,15 +212,13 @@ function cellText(col, v) {
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
   try { return JSON.stringify(v); } catch (e) { return String(v); }
 }
-// 特定字段的值渲染为徽标（其余列纯文本）
+// 特定字段的值渲染为徽标：布尔列统一用 pill（true=强调色 / false=弱化色），避免裸 true/false 不易读；
+// 通用工具不内置任何业务字段名（旧实现硬编码 kind/isSquare 等，已移除）
 function pillFor(field, value) {
-  if (field === 'kind') {
-    if (value === 'public') return '<span class="pill pub">公开圈</span>';
-    if (value === 'invite') return '<span class="pill inv">私密圈</span>';
-  }
-  if (field === 'isSquare' && value === true) return '<span class="pill">广场</span>';
-  if (field === 'deleted' && value === true) return '<span class="pill" style="background:var(--danger-bg);color:var(--danger)">已删</span>';
-  return null;
+  if (typeof value !== 'boolean') return null;
+  return value
+    ? '<span class="pill" style="background:var(--danger-bg);color:var(--danger)">true</span>'
+    : '<span class="pill" style="opacity:.55">false</span>';
 }
 
 function renderDbTable() {
@@ -337,7 +335,7 @@ function highlightJson(text) {
 }
 
 // ---------- 文档查看 / 编辑 / 删除 ----------
-let _editing = null; // { name, id }
+let _editing = null; // { name, id, etag }
 let _editOrig = ''; // 打开（或进入编辑）时的原始文本，用于未保存检测
 function setDocMode(edit) {
   const ta = $('#docText'), pre = $('#docPre');
@@ -366,10 +364,11 @@ function docDirty() {
 }
 async function openDoc(id, edit) {
   const name = S.db.collection;
-  let doc;
-  try { doc = (await apiGet('/api/doc?' + new URLSearchParams({ name, id }))).doc; }
+  let r;
+  try { r = await apiGet('/api/doc?' + new URLSearchParams({ name, id })); }
   catch (e) { return toast('读取文档失败：' + e.message, 'err'); }
-  _editing = { name, id };
+  const doc = r.doc;
+  _editing = { name, id, etag: r.etag || '' };
   const idShort = id.length > 16 ? id.slice(0, 16) + '…' : id;
   $('#docTitle').textContent = '文档 · ' + name;
   $('#docId').textContent = idShort;
@@ -408,7 +407,7 @@ async function saveDoc() {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return toast('须为 JSON 对象', 'err');
   const btn = $('#docSave'); btn.disabled = true; btn.textContent = '保存中…';
   try {
-    await apiPut('/api/doc?name=' + _editing.name + '&id=' + encodeURIComponent(_editing.id), doc);
+    await apiPut('/api/doc?name=' + _editing.name + '&id=' + encodeURIComponent(_editing.id), Object.assign({}, doc, { $etag: _editing.etag || '' }));
     toast('已保存', 'ok');
     closeModals(true);
     loadDb();
