@@ -34,7 +34,8 @@
 .
 ├── server.js          # 本地管理服务器（全部 API + 静态资源服务）
 ├── config/
-│   └── environments.json  # 环境+凭证持久化（页面「环境配置」自动写入，已被 .gitignore 忽略）
+│   ├── environments.json  # 环境+凭证持久化（页面「环境配置」自动写入，已被 .gitignore 忽略）
+│   └── audit.jsonl        # 变更审计日志（append-only，记录文档/文件/环境增删改，已被 .gitignore 忽略）
 ├── public/
 │   ├── index.html     # 管理台单页（概览 / 云数据库 / 云存储 / 环境配置 四个 Tab）
 │   ├── styles.css     # 全局样式
@@ -45,6 +46,11 @@
 │       ├── storage.js     # 云存储 Tab
 │       ├── settings.js    # 环境配置 Tab
 │       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动（ES Module 入口）
+├── scripts/
+│   ├── check.js           # 语法检查（9 个 JS 逐一 node --check）
+│   ├── smoke.js           # 隔离冒烟测试（Mock 模式：临时配置目录 + 内存假 SDK，34 项断言）
+│   ├── e2e.js             # Playwright E2E（未安装 playwright 时自动 SKIPPED）
+│   └── mock-cloudbase.js  # 内存版 CloudBase SDK（MOCK_CLOUDBASE=1 时替代真实 SDK）
 └── package.json
 ```
 
@@ -85,9 +91,10 @@ npm start
 ### 4. 开发校验（可选）
 
 ```bash
-npm run check   # 语法检查：7 个 JS 文件（server + 前端 6 模块）逐一 node --check
-npm run smoke   # 隔离冒烟测试：临时配置目录 + 假凭证 + 独立端口启动服务，16 项断言（不触碰真实 config/）
-npm test        # check + smoke 一起跑
+npm run check   # 语法检查：9 个 JS 文件逐一 node --check
+npm run smoke   # 隔离冒烟测试：临时配置目录 + 内存 Mock SDK（MOCK_CLOUDBASE=1），34 项断言（不触碰真实 config/，零网络零凭证）
+npm run e2e     # Playwright 无头浏览器 E2E（需先 npm i -D playwright && npx playwright install chromium；未安装则 SKIPPED）
+npm test        # check + smoke + e2e 一起跑
 ```
 
 ## 配置项
@@ -101,6 +108,7 @@ npm test        # check + smoke 一起跑
 | `ADMIN_HOST` | 绑定地址（默认 `127.0.0.1`，**务必保持本机回环**） |
 | `ADMIN_TOKEN` | 设置后所有 `/api` 请求须带 `x-admin-token: <值>` 请求头 |
 | `ADMIN_UPLOAD_LIMIT` | 单文件上传上限（字节，默认 `20MB`） |
+| `MOCK_CLOUDBASE` | `=1` 时以内置内存 Mock 替代 CloudBase SDK（smoke/E2E 测试用，零网络零凭证；**勿在生产使用**） |
 
 ## API 一览
 
@@ -118,22 +126,38 @@ npm test        # check + smoke 一起跑
 | GET | `/api/overview` | 概览：各集合文档数 + 云存储统计（60s 服务端 TTL 缓存；响应含 `at`/`cached`，`?fresh=1` 强制重算） |
 | GET | `/api/collections` | 集合名列表 |
 | GET | `/api/collection?name=&page=&size=&sort=&sortDir=&field=&q=` | 文档分页查询（`q` 对 `field` 做不区分大小写正则匹配；`q` 须配合 `field` 使用，`field` 为空时返回 400） |
-| GET | `/api/doc?name=&id=` | 读取单条文档 |
+| GET | `/api/doc?name=&id=` | 读取单条文档（响应含 `etag`：打开时的内容指纹，保存时回传） |
 | POST | `/api/collection?name=` | 新增文档（JSON body，不允许指定 `_id`） |
-| PUT | `/api/doc?name=&id=` | 更新文档（JSON body 整包替换） |
+| PUT | `/api/doc?name=&id=` | 更新文档（JSON body 整包替换；body 可带 `$etag` 回传打开时的指纹做**乐观锁**并发保护——与当前指纹不一致返回 409，防静默覆盖他人修改） |
 | DELETE | `/api/doc?name=&id=` | 删除文档 |
 | GET | `/api/storage?prefix=&maxKeys=` | 列举某前缀下一级子目录与文件 |
 | POST | `/api/storage/urls` | 批量获取临时访问 URL（body: `{ fileIDs: [...] }`，2 小时有效） |
 | POST | `/api/storage/delete` | 批量删除文件（body: `{ fileIDs: [...] }`） |
-| POST | `/api/storage/upload?cloudPath=` | 上传文件（raw body，上限见 `ADMIN_UPLOAD_LIMIT`） |
-| GET | `/api/storage/walk?prefix=&max=` | 递归扫描前缀下文件（概览 / 子目录聚合用） |
+| POST | `/api/storage/upload?cloudPath=` | 上传文件（raw body，上限见 `ADMIN_UPLOAD_LIMIT`；**同名路径返回 409**，防误覆盖——需覆盖请先删除旧文件） |
+| GET | `/api/storage/walk?prefix=&max=` | 递归扫描前缀下文件（概览 / 子目录聚合用，上限 5000） |
+
+所有接口错误响应统一为 `{ "error": "可读原因" }`（含 HTTP 400/401/404/409/500/503）。
 
 ## 安全设计
 
-- **仅本机回环**：服务默认绑定 `127.0.0.1`，不对外网暴露；如确需对外访问，请自行在反向代理层加鉴权，并务必设置 `ADMIN_TOKEN`。
-- **密钥零下发**：腾讯云 SecretId / SecretKey 只存在于本进程环境变量中，永远不会发送到浏览器；浏览器 ↔ 本服务走同源 HTTP，本服务代为调用 CloudBase，前端零凭证。
-- **路径白名单**：静态资源仅可访问 `public/` 目录（防目录穿越）。
-- **输入校验**：集合名限制 `^[a-zA-Z0-9_-]+$`；分页、排序、上限均有边界钳制。
+- **仅本机回环**：服务默认绑定 `127.0.0.1`，不对外网暴露。启动前强校验：`ADMIN_HOST` 非回环地址（含 `0.0.0.0`）且未配置 `ADMIN_TOKEN` 时**直接拒绝启动**；对外暴露须先设置 `ADMIN_TOKEN` 并在反向代理层加鉴权。
+- **密钥零下发**：腾讯云 SecretId / SecretKey 只存在于本进程与 `config/environments.json` 中，永远不会发送到浏览器；浏览器 ↔ 本服务走同源 HTTP，本服务代为调用 CloudBase，前端零凭证。
+- **路径白名单**：静态资源仅可访问 `public/` 目录（`path.resolve` 归一化 + 前缀 + 分隔符校验，防目录穿越）。
+- **输入校验**：集合名限制 `^[a-zA-Z0-9_-]+$`；筛选正则 ≤200 字符且字段名白名单；分页、排序、上限均有边界钳制；上传路径拒绝 `..` / 空段。
+- **`ADMIN_TOKEN` 鉴权**：设置后所有 `/api` 请求须带 `x-admin-token` 请求头（或 `?token=` 查询参数），比较采用常量时间算法。
+- **变更审计**：文档 / 存储文件 / 环境的增删改均追加到 `config/audit.jsonl`（单行 JSON：`at`/`action`/`envId`/`target`/`detail`），便于事后追溯「谁在何时改了什么」。
+
+## 缓存与竞态防护
+
+| 层 | 机制 | 说明 |
+| --- | --- | --- |
+| 服务端 | 概览 TTL 缓存（60s） | 各集合 count + 存储采样是重操作；`?fresh=1` 强制重算，响应含 `at`（统计时刻）/`cached` |
+| 服务端 | 集合 count 二级缓存（5min） | 文档增删改后精确失效对应集合，读路径不受影响 |
+| 服务端 | 文档 `etag` 乐观锁 | 打开文档时下发内容指纹，保存回传 `$etag` 比对；期间被改过 → 409 提示重载 |
+| 服务端 | SDK 客户端按 envId 缓存 | 凭证 / 环境 ID 变更时 `invalidateClient` 失效重建，避免沿用旧密钥实例 |
+| 前端 | 临时 URL 缓存（TTL 1.8h） | 链接 2h 有效，提前 10% 失效；切环境 `clearUrlCache` 全清 |
+| 前端 | 请求序号（`dbSeq` / `stUrlSeq` / `ovSeq`） | 快速翻页 / 切环境 / 切目录时，在途旧响应按序号丢弃，不覆盖新数据 |
+| 前端 | 删除批次语义 | 批量删除按 50/批串行；单批失败不整批回滚，失败文件保持选中可重试 |
 
 ## 常见问题
 
@@ -149,8 +173,13 @@ npm test        # check + smoke 一起跑
 **Q: 集合列表只看到几个内置示例集合？**
 这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请到「环境配置」页点「测试」确认凭证能否访问该环境，或启动时用 `KNOWN_COLLECTIONS` 环境变量配置你自己的集合名单。
 
-**Q: 图片预览失效？**
-临时 URL 有效期 2 小时，刷新页面重新获取即可。
+**Q: 概览数据是实时的吗？**
+概览走服务端 60s TTL 缓存（各集合 count + 存储采样是较重操作），同一环境 60s 内重复进入直接复用（页面标注「缓存数据」）；点「刷新」按钮带 `fresh=1` 强制重算。
+
+**Q: 图片预览失效？**临时 URL 有效期 2 小时，刷新页面重新获取即可。
+
+**Q: 保存文档时提示「文档已被其他修改覆盖」？**
+这是乐观锁并发保护（`etag`）：打开文档到保存之间，该文档被别处改过（指纹不一致）→ 返回 409。按提示重新打开文档、核对差异后再保存即可，避免静默覆盖他人修改。
 
 ## 许可
 

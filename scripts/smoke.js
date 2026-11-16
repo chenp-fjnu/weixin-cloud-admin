@@ -55,6 +55,23 @@ function waitForServer(deadlineMs) {
   });
 }
 
+function upload(path, cloudPath, buf) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: HOST, port: PORT, path: path + '?cloudPath=' + encodeURIComponent(cloudPath),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': buf.length }
+    }, (res) => {
+      let b = '';
+      res.on('data', (c) => { b += c; });
+      res.on('end', () => { let j = null; try { j = JSON.parse(b); } catch (_) {} resolve({ status: res.statusCode, json: j, body: b }); });
+    });
+    req.on('error', reject);
+    req.write(buf);
+    req.end();
+  });
+}
+
 function killServer() {
   if (serverProc && serverProc.exitCode === null) {
     try { serverProc.kill('SIGTERM'); } catch (_) { /* ignore */ }
@@ -79,7 +96,8 @@ function killServer() {
     env: Object.assign({}, process.env, {
       ADMIN_PORT: String(PORT),
       ADMIN_HOST: HOST,
-      ADMIN_CONFIG_DIR: tmpDir
+      ADMIN_CONFIG_DIR: tmpDir,
+      MOCK_CLOUDBASE: '1'
     }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -137,6 +155,44 @@ function killServer() {
     check('DELETE /api/environments → 200', del.status === 200, 'got ' + del.status);
     after = await request('GET', '/api/environments');
     check('删除后列表不含新环境', !(after.json && after.json.envs || []).some(e => e.envId === addId));
+
+    // 8. 数据链路（Mock 模式）：集合列表 → 新增文档 → 文档 etag → 乐观锁 409 → 筛选
+    const col = await request('GET', '/api/collection?name=demo');
+    check('GET /api/collection → 200', col.status === 200, 'got ' + col.status);
+    check('集合含 3 条 seed 文档', col.json && col.json.total === 3 && Array.isArray(col.json.docs), JSON.stringify(col.json && col.json.total));
+    const added = await request('POST', '/api/collection?name=demo', { name: 'Smoke', n: 9 });
+    check('POST /api/collection 新增 → 200 且有 id', added.status === 200 && added.json && !!added.json.id, added.body);
+    const d1 = col.json.docs[0], d1id = d1._id;
+    const g = await request('GET', '/api/doc?name=demo&id=' + d1id);
+    check('GET /api/doc → 200 且返回 etag', g.status === 200 && g.json && typeof g.json.etag === 'string' && g.json.etag.length === 16, g.body);
+    const etag = g.json.etag;
+    const upd = await request('PUT', '/api/doc?name=demo&id=' + d1id, Object.assign({}, d1, { n: 42, $etag: etag }));
+    check('PUT /api/doc 带匹配 etag → 200', upd.status === 200, 'got ' + upd.status);
+    const g2 = await request('GET', '/api/doc?name=demo&id=' + d1id);
+    check('保存后内容已更新', g2.json && g2.json.doc && g2.json.doc.n === 42);
+    const conflict = await request('PUT', '/api/doc?name=demo&id=' + d1id, Object.assign({}, d1, { n: 43, $etag: etag }));
+    check('PUT /api/doc 回传旧 etag → 409 并发保护', conflict.status === 409, 'got ' + conflict.status);
+    const q = await request('GET', '/api/collection?name=demo&field=n&q=' + encodeURIComponent('^[23]$'));
+    check('筛选命中 2 条', q.json && q.json.total === 2, 'got ' + (q.json && q.json.total));
+    check('筛选结果不含 n=9', q.json && q.json.docs && q.json.docs.every((d) => d.n !== 9));
+
+    // 9. 存储链路：上传 → 同名 409 → 列表 → 临时 URL → 删除 → walk
+    const up1 = await upload('/api/storage/upload', 'smoke/t.txt', Buffer.from('hello smoke'));
+    check('POST /api/storage/upload → 200', up1.status === 200, 'got ' + up1.status + ' ' + up1.body);
+    const up2 = await upload('/api/storage/upload', 'smoke/t.txt', Buffer.from('again'));
+    check('同名路径再传 → 409 去重', up2.status === 409, 'got ' + up2.status);
+    const lst = await request('GET', '/api/storage?prefix=smoke/');
+    check('存储列表含新文件', lst.json && lst.json.files && lst.json.files.some((f) => f.name === 'smoke/t.txt'), lst.body);
+    const urls = await request('POST', '/api/storage/urls', { fileIDs: ['smoke/t.txt'] });
+    check('临时 URL 有值', urls.json && urls.json.urls && (urls.json.urls['smoke/t.txt'] || '').startsWith('https://'), urls.body);
+    const sdel = await request('POST', '/api/storage/delete', { fileIDs: ['smoke/t.txt'] });
+    check('POST /api/storage/delete → 200', sdel.status === 200 && sdel.json && sdel.json.deleted === 1, sdel.body);
+    const lst2 = await request('GET', '/api/storage?prefix=smoke/');
+    check('删除后列表不含该文件', lst2.json && lst2.json.files && !lst2.json.files.some((f) => f.name === 'smoke/t.txt'));
+    const ov = await request('GET', '/api/overview?fresh=1');
+    check('overview counts 含 demo（3 seed + 1 新增 = 4）', ov.json && ov.json.counts && ov.json.counts.demo === 4, JSON.stringify(ov.json && ov.json.counts));
+    const walk = await request('GET', '/api/storage/walk?prefix=');
+    check('GET /api/storage/walk → 200', walk.status === 200, 'got ' + walk.status);
 
   } catch (e) {
     failures++;

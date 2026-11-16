@@ -1,4 +1,4 @@
-/* 语法检查：node --check 全部 7 个 JS（ESM 文件按 .mjs 校验，避免 import/export 误报）
+/* 语法检查：node --check 全部 9 个 JS（ESM 文件按 .mjs 校验，避免 import/export 误报）
    用法：node scripts/check.js */
 'use strict';
 const fs = require('fs');
@@ -9,6 +9,8 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const files = [
   'server.js',
+  'scripts/mock-cloudbase.js',
+  'scripts/e2e.js',
   'public/js/common.js',
   'public/js/overview.js',
   'public/js/db.js',
