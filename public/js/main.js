@@ -1,7 +1,12 @@
-/* 云端数据管理台 —— 启动与跨 Tab 逻辑
+/* 云端数据管理台 —— 启动与跨 Tab 逻辑（ES Module 入口）
    侧边导航切换（快捷键 1/2/3）、主题切换、连接状态、环境下拉/切换、全部事件绑定、DOMContentLoaded 启动。
-   引入顺序须为最后一个：依赖 common/overview/db/storage 已定义的全部全局函数与状态。 */
-'use strict';
+   其余模块（common/overview/db/storage/settings）经 import 引入；main ↔ settings 为函数级循环引用（仅调用时求值，安全）。 */
+
+import { $, $$, S, apiGet, apiPost, toast, ic, initIcons, applyTheme, toggleTheme, THEME_LS_KEY, ENV_LS_KEY, copyText } from './common.js';
+import { loadOverview } from './overview.js';
+import { initDb, resetDb, dbSkeletonRows, loadDb, openDoc, closeModals, setDocMode, saveDoc, fmtDocBtn, updateDirty, docDirty } from './db.js';
+import { loadStorage, resetStorage, hideBatchBar, clearSel, selectAllPage, deleteSelected, scanDirs, setStView, resetDeleteBtn, uploadOneFile, uploadToCurrent, ST_VIEW_KEY } from './storage.js';
+import { loadEnvironments, openEnvModal, saveEnvModal, testEnvModal } from './settings.js';
 
 // ---------- 顶部标题 ----------
 const PAGE_META = {
@@ -108,24 +113,22 @@ async function switchEnv(envId, force) {
   closeModals(true);
   // 各 tab 数据均为环境级状态：全部重置，当前 tab 重载
   S.overview = null;
-  dbInited = false;
-  S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
-  S.db.sort = ''; S.db.sortDir = 'desc'; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
+  resetDb(); // 复位 dbInited / S.db / 在途请求序号
   const qEl = $('#dbQuery'), sortEl = $('#dbSort'), fieldEl = $('#dbField'), sortDirEl = $('#dbSortDir');
   if (qEl) qEl.value = '';
   if (sortEl) sortEl.value = '';
   if (fieldEl) fieldEl.value = '';
   if (sortDirEl) sortDirEl.value = 'desc';
-  S.st.prefix = ''; S.st.loadedAt = 0; S.st.filter = ''; S.st.sort = 'name';
+  resetStorage(); // 复位 stSel / S.st / 在途缩略图序号 / URL 缓存
   const flt = $('#stFilter'), srt = $('#stSort');
   if (flt) flt.value = '';
   if (srt) srt.value = 'name';
-  stSel = new Set();
   hideBatchBar();
   const tab = S.activeTab || 'overview';
   // 清空当前 Tab 右侧内容并进入加载态（避免加载完成前仍显示旧环境数据）
   showActiveTabLoading(tab);
-  loadOverview();
+  // 概览懒加载：仅当前正在看概览 Tab 时才重算，切走时不浪费一次全集合统计
+  if (tab === 'overview') loadOverview();
   if (tab === 'db') initDb();
   if (tab === 'storage') loadStorage();
   toast('已切换到环境 ' + envId, 'ok');
@@ -157,7 +160,7 @@ function bindEvents() {
   $('#ovRefresh').addEventListener('click', () => {
     $('#ovLoading').style.display = '';
     $('#ovBody').style.display = 'none';
-    loadOverview();
+    loadOverview(true); // 手动刷新：带 fresh=1 跳过服务端 60s TTL 缓存
   });
   // 连接状态卡：手动重试
   $('#connBadge').addEventListener('click', () => {
@@ -178,6 +181,8 @@ function bindEvents() {
   $('#dbRefresh').addEventListener('click', loadDb);
   $('#dbSearch').addEventListener('click', function () {
     const q = $('#dbQuery').value.trim();
+    if (!q) return toast('请输入筛选内容', 'err');
+    if (!$('#dbField').value) return toast('请先在「字段」下拉选择要筛选的字段', 'err'); // 服务端对空字段明确 400，前端提前拦截给出指引
     if (q.length > 200) return toast('搜索表达式过长（≤200 字符）', 'err');
     S.db.field = $('#dbField').value; S.db.q = q; S.db.page = 1;
     loadDb();
@@ -328,5 +333,13 @@ document.addEventListener('DOMContentLoaded', function () {
   const ei = $('.envctl .ei'); if (ei) ei.innerHTML = ic('cloud');
   bindEvents();
   checkStatus();
-  loadOverview();
+  loadOverview(false); // 启动首载：允许命中服务端 TTL 缓存（服务重启前 60s 内）
 });
+
+// 编辑中未保存的文档：拦截页面关闭/刷新
+window.addEventListener('beforeunload', (e) => {
+  if (docDirty()) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ---------- 模块导出（供 settings.js / db.js 循环引用调用） ----------
+export { checkStatus, switchEnv, switchTab, setNav };

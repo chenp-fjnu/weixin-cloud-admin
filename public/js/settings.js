@@ -1,8 +1,10 @@
-/* 云端数据管理台 —— 环境配置 Tab
+/* 云端数据管理台 —— 环境配置 Tab（ES Module）
    云环境的增 / 删 / 改 / 默认切换 / 凭证连通性测试；全部走 /api/environments*。
-   密钥只在浏览器 ↔ 本地服务之间传输，服务端只落盘 config/environments.json（不入 git）。
-   引入顺序：common → overview → db → storage → settings → main。 */
-'use strict';
+   密钥只在浏览器 ↔ 本地服务之间传输，服务端只落盘 config/environments.json（不入 git）。 */
+
+import { $, S, ENV_LS_KEY, apiGet, apiPost, apiPut, apiDelete, toast, esc, ic, showModal, hideModal } from './common.js';
+import { checkStatus, switchEnv } from './main.js';
+import { closeModals } from './db.js';
 
 const SETTINGS_HINT_URL = 'https://console.cloud.tencent.com/api/v3/secret-key';
 
@@ -218,3 +220,6 @@ async function testEnvModal() {
     btn.disabled = false;
   }
 }
+
+// ---------- 模块导出 ----------
+export { loadEnvironments, openEnvModal, saveEnvModal, testEnvModal };

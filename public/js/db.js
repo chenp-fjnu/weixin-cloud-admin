@@ -1,7 +1,10 @@
-/* 云端数据管理台 —— 云数据库 Tab + 文档查看/编辑模态框
+/* 云端数据管理台 —— 云数据库 Tab + 文档查看/编辑模态框（ES Module）
    集合下拉、分页/筛选/排序、表格渲染（业务字段 + 行点击 + cloud:// 图片批量临时链接）、文档 CRUD。
    openCollection 供概览卡片点击跳转调用（见 overview.js）。 */
-'use strict';
+
+import { $, $$, toast, apiGet, apiPut, apiDelete, S, esc, fmtNum, isTimeField, fmtTimeValue, showModal } from './common.js';
+import { resolveUrls, isImage } from './storage.js';
+import { setNav } from './main.js'; // 函数级循环引用：仅调用时求值，安全
 
 // ---------- 数据库 ----------
 // 全环境集合名单的主源是服务端 /api/collections（listCollections）；
@@ -10,6 +13,13 @@ const KNOWN_COLS = [];
 
 let dbInited = false;
 let dbSeq = 0; // 请求序号：快速翻页/切环境时丢弃过期响应，避免旧数据覆盖新数据
+// 切环境时由 main.js 调用：复位 dbInited 与 S.db 状态（模块级 let 跨文件不可直接赋值，必须走封装）
+function resetDb() {
+  dbInited = false;
+  dbSeq++; // 使所有在途请求过期
+  S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
+  S.db.sort = ''; S.db.sortDir = 'desc'; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
+}
 async function initDb() {
   const sel = $('#dbCollection');
   if (!dbInited) {
@@ -418,3 +428,9 @@ function delDoc(id) {
     .catch(e => toast('删除失败：' + e.message, 'err'))
     .finally(() => { _delBusy = false; });
 }
+
+// ---------- 模块导出 ----------
+export {
+  resetDb, initDb, openCollection, loadDb, dbSkeletonRows,
+  setDocMode, docDirty, closeModals, fmtDocBtn, updateDirty, saveDoc, openDoc
+};

@@ -61,7 +61,8 @@ loadDotEnv();
 // ============ 多环境注册表（可页面增删改，持久化到 config/environments.json） ============
 // 启动时：若存在 config/environments.json 则以其为准；否则用 .env（TCB_ENV_IDS /
 // TCB_SECRET_ID[_N]）播种初始列表并落盘。之后页面「环境配置」页的增删改全部写回该文件。
-const CONFIG_DIR = path.join(__dirname, 'config');
+// ADMIN_CONFIG_DIR 可覆盖配置目录（smoke 脚本用临时目录隔离，避免触碰真实配置）
+const CONFIG_DIR = process.env.ADMIN_CONFIG_DIR || path.join(__dirname, 'config');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'environments.json');
 const ENV_ID_RE = /^[a-zA-Z0-9_-]{2,64}$/;
 const _envs = { defaultId: '', list: [] }; // list: [{ envId, secretId, secretKey }]
@@ -126,11 +127,10 @@ function hasSecrets(envId) {
 // 凭证 / 环境变更时清除 SDK 客户端缓存，避免沿用旧密钥构造的实例
 function invalidateClient(envId) { if (envId && _clients.has(envId)) _clients.delete(envId); }
 
-// 兜底集合名单（listCollections 接口失败时使用）；可用 KNOWN_COLLECTIONS 环境变量覆盖（逗号分隔）
-const KNOWN_COLLECTIONS = (process.env.KNOWN_COLLECTIONS ||
-  'wardrobe_items,wardrobe_user_profiles,wardrobe_app_config,wardrobe_circles,' +
-  'wardrobe_circle_items,wardrobe_circle_outfits,wardrobe_reports'
-).split(',').map(s => s.trim()).filter(Boolean);
+// 兜底集合名单（listCollections 接口失败时使用）；通用工具不内置业务集合名，
+// 需要时用 KNOWN_COLLECTIONS 环境变量显式覆盖（逗号分隔）
+const KNOWN_COLLECTIONS = (process.env.KNOWN_COLLECTIONS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
 
 // ============ 客户端（惰性构造，按 envId 缓存） ============
 const _clients = new Map(); // envId -> { tcb, manager }
@@ -167,6 +167,11 @@ function getManager(envId) {
   return c.manager;
 }
 function db(envId) { return getClient(envId).tcb.database(); }
+
+// 概览 TTL 缓存：存储采样（递归 walk 上限 5000 文件）+ 全集合 count 是最重的接口，
+// 60s 内同环境重复进入/切环境直接复用；请求带 fresh=1 强制重算（概览页「刷新」按钮）。
+const OVERVIEW_TTL_MS = 60 * 1000;
+let _ovCache = null; // { envId, at, body }
 
 // 解析并校验本次请求的目标环境（缺省=默认环境；非法 env 直接 4xx 级报错）
 function resolveEnv(params) {
@@ -278,6 +283,41 @@ async function storageUpload(cloudPath, buffer, envId) {
   return { fileID: (r && r.fileID) || '' };
 }
 
+// 日期类型保留：前端整包编辑走 JSON.stringify，Date 值会被序列化为 ISO 字符串（带时区后缀）
+// 或 {$date} 包装对象。若 set() 原样落库，Date 字段会退化成 String，之后按该字段排序/时间查询
+// 会失效。此处识别这些形态并还原为 Date，让类型与编辑前一致。
+// 还原规则（保守，避免误伤业务上刻意用字符串存日期的场景）：
+//   1) {$date: X} 包装对象 → Date；
+//   2) 带时区后缀的 ISO 串（Z / ±HH:MM / ±HHMM，可带毫秒）→ Date（原生 Date 序列化必然带时区）；
+//   3) 字段名含时间语义（created/update/time 等）的 ISO 日期串 → Date。
+function timeSemanticsField(name) {
+  return /time|date|stamp|created|updated|modified|birthday|birth|At$|^at$|_at$|\btime\b/i.test(name || '');
+}
+const TZ_SUFFIX_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2}|[+-]\d{4})$/;
+function reviveDateValues(v, key) {
+  if (v && typeof v === 'object' && !Array.isArray(v) && v.$date != null && typeof v.$date === 'number') return new Date(v.$date);
+  if (typeof v === 'string') {
+    if (TZ_SUFFIX_RE.test(v)) return new Date(v);
+    if (timeSemanticsField(key) && /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?$/.test(v)) return new Date(v);
+  }
+  if (Array.isArray(v)) return v.map((x, i) => reviveDateValues(x, key));
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = reviveDateValues(v[k], k);
+    return out;
+  }
+  return v;
+}
+
+// 上传路径规范化：去前导 /、拒绝空段与 .. 段（防路径穿越 / 生成非法 cloudPath）
+function normCloudPath(p) {
+  p = String(p || '').trim().replace(/^\/+/, '');
+  if (!p || p.endsWith('/')) throw new AppError('cloudPath 非法：不能为空或仅目录前缀', 'BADPATH');
+  const segs = p.split('/');
+  if (segs.some(s => !s || s === '.' || s === '..')) throw new AppError('cloudPath 含非法路径段：' + p, 'BADPATH');
+  return p;
+}
+
 // ============ 数据库操作 ============
 async function collectionCount(envId, name, filter) {
   let c = db(envId).collection(name);
@@ -295,7 +335,10 @@ async function collectionQuery(envId, name, { skip, limit, sort, sortDir, filter
 function buildFilter(envId, params) {
   const field = (params.get('field') || '').trim();
   const q = (params.get('q') || '').trim();
-  if (!field || !q) return null;
+  if (!field && !q) return null;
+  // 只给搜索词不给字段：过去会静默返回未过滤全量（用户以为搜了其实没搜），
+  // 现在明确 400——全字段正则搜索需先确定字段集合，不做模糊兜底
+  if (!field) throw new AppError('筛选必须指定字段（在「字段」下拉选择）', 'BADREGEX');
   // 正则长度限制：Mongo 对 regexp 有上限，超长会慢查或报错
   if (q.length > 200) throw new AppError('筛选正则过长（上限 200 字符）', 'BADREGEX');
   // 字段名白名单，避免误构造嵌套/操作符路径
@@ -497,6 +540,10 @@ const handlers = {
 
   'GET /api/overview': async (req, res, params) => {
     const envId = resolveEnv(params);
+    // TTL 缓存命中直接返回（标注 cached，前端展示「统计于 …（缓存）」）
+    if (params.get('fresh') !== '1' && _ovCache && _ovCache.envId === envId && Date.now() - _ovCache.at < OVERVIEW_TTL_MS) {
+      return sendJson(res, 200, Object.assign({}, _ovCache.body, { cached: true }));
+    }
     const allNames = await listCollectionNames(envId);
     const counts = {};
     const details = [];
@@ -518,7 +565,9 @@ const handlers = {
       }
       storage = { topDirs: dirSet.size, totalFiles: walk.length, totalSize: size, truncated: walk.length >= 5000 };
     } catch (e) { storage.error = e.message; }
-    return sendJson(res, 200, { envId, counts: counts, details: details, storage: storage });
+    const body = { envId, counts: counts, details: details, storage: storage, at: new Date().toISOString(), cached: false };
+    _ovCache = { envId, at: Date.now(), body };
+    return sendJson(res, 200, body);
   },
 
   'GET /api/collections': async (req, res, params) => {
@@ -588,7 +637,8 @@ const handlers = {
     try {
       // 用 set() 整体替换，与前端「编辑整包 JSON」的所见即所得一致；
       // 原 update() 是部分更新，删字段不生效且易留残留字段。
-      await db(envId).collection(name).doc(id).set(doc);
+      // set 前还原被 JSON 序列化退化的 Date 值（见 reviveDateValues 说明）。
+      await db(envId).collection(name).doc(id).set(reviveDateValues(doc, ''));
       return sendJson(res, 200, { ok: true });
     } catch (e) { return sendError(res, 500, e.message); }
   },
@@ -614,9 +664,14 @@ const handlers = {
     } catch (e) { return sendError(res, 500, e.message); }
   },
 
-  'GET /api/storage/urls': async (req, res, params) => {
+  'POST /api/storage/urls': async (req, res, params) => {
+    // POST + JSON 数组：GET 逗号拼 fileIDs 有两个坑——文件名含逗号会被错拆，
+    // 且 50 个长路径可能撑爆 URL 长度。env 仍走 query（resolveEnv 统一处理）。
     const envId = resolveEnv(params);
-    const fileIDs = (params.get('fileIDs') || '').split(',').map(s => s.trim()).filter(Boolean);
+    let body;
+    try { body = await readJsonBody(req); } catch (e) { return sendError(res, 400, e.message); }
+    const fileIDs = (Array.isArray(body && body.fileIDs) ? body.fileIDs : [])
+      .map(s => String(s || '').trim()).filter(Boolean);
     if (!fileIDs.length) return sendError(res, 400, '缺少 fileIDs');
     try { return sendJson(res, 200, { urls: await storageTempUrls(fileIDs, envId) }); }
     catch (e) { return sendError(res, 500, e.message); }
@@ -634,8 +689,9 @@ const handlers = {
 
   'POST /api/storage/upload': async (req, res, params) => {
     const envId = resolveEnv(params);
-    const cloudPath = (params.get('cloudPath') || '').trim();
-    if (!cloudPath) return sendError(res, 400, '缺少 cloudPath');
+    let cloudPath;
+    try { cloudPath = normCloudPath(params.get('cloudPath')); }
+    catch (e) { return sendError(res, 400, e.message); }
     const limit = parseInt(process.env.ADMIN_UPLOAD_LIMIT || String(20 * 1024 * 1024), 10);
     let buf;
     try { buf = await readBody(req, limit); } catch (e) { return sendError(res, 400, e.message); }
@@ -682,6 +738,16 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) sendError(res, code, (e && e.message) || 'internal error');
     else { try { res.end(); } catch (_) {} }
   }
+});
+
+// 兜底保护：handler 内已有 try/catch，这里拦截 handler 之外的意外（SDK 内部异步回调等）。
+// unhandledRejection 只记录不退出；uncaughtException 记录后退出，避免进程带病运行。
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.stack ? err.stack : err);
+  try { process.exit(1); } catch (_) {}
 });
 
 // 启动前校验：非本机回环地址且未配置 ADMIN_TOKEN 时拒绝启动，避免误配置对外暴露导致裸奔

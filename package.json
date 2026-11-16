@@ -4,7 +4,10 @@
   "private": true,
   "description": "云端数据管理台（本地运行，连接云开发环境的全部数据库集合与云存储文件；支持多环境顶栏切换）",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node scripts/check.js",
+    "smoke": "node scripts/smoke.js",
+    "test": "node scripts/check.js && node scripts/smoke.js"
   },
   "engines": {
     "node": ">=16.0.0"

@@ -1,7 +1,5 @@
-/* 云端数据管理台 —— 公共工具与全局状态
-   零依赖原生 JS。图标库、DOM 简写、统一 API 请求、格式/转义工具、主题、全局状态 S。
-   引入顺序：common → overview → db → storage → main（无构建步骤，纯全局作用域）。 */
-'use strict';
+/* 云端数据管理台 —— 公共工具与全局状态（ES Module）
+   零依赖原生 JS。图标库、DOM 简写、统一 API 请求、格式/转义工具、主题、全局状态 S。 */
 
 // ---------- 图标库（线性 SVG，stroke 继承 currentColor） ----------
 const ICONS = {
@@ -71,14 +69,14 @@ function toast(msg, type) {
 async function api(path, opts) {
   opts = opts || {};
   const headers = Object.assign({}, opts.headers || {});
-  if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+  if (opts.body !== undefined && !opts.isBinary) headers['Content-Type'] = 'application/json';
   if (!/[?&]env=/.test(path) && S.env) path += (path.includes('?') ? '&' : '?') + 'env=' + encodeURIComponent(S.env);
   let res;
   try {
     res = await fetch(path, {
       method: opts.method || 'GET',
       headers,
-      body: opts.body !== undefined ? (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body)) : undefined
+      body: opts.body !== undefined ? (opts.isBinary ? opts.body : (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body))) : undefined
     });
   } catch (e) {
     throw new Error('无法连接本地服务：请确认 server 已启动（当前为离线状态，可点左侧「服务状态」重试）');
@@ -93,6 +91,8 @@ const apiGet = (path) => api(path);
 const apiPost = (path, body) => api(path, { method: 'POST', body });
 const apiPut = (path, body) => api(path, { method: 'PUT', body });
 const apiDelete = (path) => api(path, { method: 'DELETE' });
+// 二进制上传：body 为 File/Blob，不经 JSON 序列化；统一自动追加 env 参数
+const apiUpload = (path, file) => api(path, { method: 'POST', body: file, isBinary: true });
 
 // ---------- 格式化 ----------
 function fmtNum(n) {
@@ -200,3 +200,12 @@ function copyText(t) {
 // ---------- 模态框通用 ----------
 function showModal(id) { $('#' + id).classList.add('show'); }
 function hideModal(id) { $('#' + id).classList.remove('show'); }
+
+// ---------- 模块导出（其余 5 个模块按需引入，取代全局作用域共享） ----------
+export {
+  ICONS, ic, initIcons, $, $$, toast,
+  api, apiGet, apiPost, apiPut, apiDelete, apiUpload,
+  fmtNum, fmtSize, fmtDate, isTimeField, fmtTimeValue, esc,
+  THEME_LS_KEY, applyTheme, toggleTheme,
+  ENV_LS_KEY, S, copyText, showModal, hideModal
+};

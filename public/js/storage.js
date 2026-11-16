@@ -1,7 +1,8 @@
-/* 云端数据管理台 —— 云存储 Tab
+/* 云端数据管理台 —— 云存储 Tab（ES Module）
    目录浏览（图标面包屑）、图片缩略图（批量临时链接 + 缓存）、文件类型图标、
    目录内筛选/排序、悬停单删、文件预览、多选删除、单文件/拖拽上传、子目录扫描聚合。 */
-'use strict';
+
+import { $, $$, S, apiGet, apiPost, apiUpload, toast, esc, ic, fmtSize, fmtDate, showModal, hideModal } from './common.js';
 
 let stSel = new Set();
 let stUrlSeq = 0; // 缩略图批量 URL 请求序号：目录切换后丢弃过期结果
@@ -193,9 +194,21 @@ function toggleSel(name) {
   updateSelCount();
 }
 function selectAllPage() {
-  S.st.files.forEach(f => stSel.add(f.name));
+  // 「本页」= 当前实际渲染的文件（受 MAX_RENDER=800 上限约束）；
+  // 旧实现选中 S.st.files 全量——渲染 800 个、可能选中几千个，删除确认框又只预览前 20 个，
+  // 一点删除就是全目录删除。现只选已渲染项，语义与所见一致。
+  const rendered = new Set();
+  $$('#stGrid .fitem').forEach(el => { if (el.dataset.path) rendered.add(el.dataset.path); });
+  rendered.forEach(n => stSel.add(n));
   $$('#stGrid .fitem').forEach(el => { if (el.dataset.path) el.classList.add('sel'); });
   updateSelCount();
+}
+// 切环境时由 main.js 调用：复位存储 Tab 状态（模块级状态跨文件不可直接改，必须走封装）
+function resetStorage() {
+  stSel.clear();
+  S.st.prefix = ''; S.st.loadedAt = 0; S.st.filter = ''; S.st.sort = 'name';
+  stUrlSeq++; // 使在途缩略图 URL 请求过期
+  clearUrlCache();
 }
 function clearSel() {
   stSel = new Set();
@@ -213,22 +226,30 @@ async function resolveUrl(cloudPath) {
   const map = await resolveUrls([cloudPath]);
   return map[cloudPath] || '';
 }
-// 批量取临时链接：按 50 一批并发请求，进程内缓存（临时链接 2h 有效），返回 { cloudPath: url }
+// 批量取临时链接：按 50 一批并发请求，进程内缓存（临时链接 2h 有效，缓存 1.8h 提前失效），返回 { cloudPath: url }
 const _urlCache = new Map();
+const _URL_TTL = 1.8 * 60 * 60 * 1000;
+function _urlFresh(p) {
+  const e = _urlCache.get(p);
+  if (!e) return '';
+  if (Date.now() - e.at > _URL_TTL) { _urlCache.delete(p); return ''; }
+  return e.url;
+}
+function clearUrlCache() { _urlCache.clear(); }
 function resolveUrls(cloudPaths) {
-  const need = cloudPaths.filter(p => !_urlCache.get(p));
+  const need = cloudPaths.filter(p => !_urlFresh(p));
   const chunks = [];
   for (let i = 0; i < need.length; i += 50) chunks.push(need.slice(i, i + 50));
   return Promise.all(chunks.map(chunk => {
     if (!chunk.length) return Promise.resolve({});
-    const p = new URLSearchParams({ fileIDs: chunk.join(',') });
-    return apiGet('/api/storage/urls?' + p.toString()).then(r => r.urls || {}).catch(() => ({}));
+    // 后端已改为 POST（URL 过长会被截断，且避免 100+ 字符的 query 串）
+    return apiPost('/api/storage/urls', { fileIDs: chunk }).then(r => r.urls || {}).catch(() => ({}));
   })).then(results => {
     const fresh = {};
     results.forEach(m => Object.assign(fresh, m));
-    Object.entries(fresh).forEach(([k, v]) => { if (v) _urlCache.set(k, v); });
+    Object.entries(fresh).forEach(([k, v]) => { if (v) _urlCache.set(k, { url: v, at: Date.now() }); });
     const map = {};
-    cloudPaths.forEach(p => { const u = _urlCache.get(p); if (u) map[p] = u; });
+    cloudPaths.forEach(p => { const u = _urlFresh(p); if (u) map[p] = u; });
     return map;
   });
 }
@@ -299,13 +320,27 @@ async function doDelete(arr) {
   _delBusySt = true;
   const btn = $('#stDelete'); btn.disabled = true;
   let ok = 0;
+  let _delFail = false;
   try {
     // 每批 50 个串行删除，汇总真实删除数（旧实现后端静默截断 50 个但前端报全量，数据不一致）
     for (let i = 0; i < arr.length; i += 50) {
-      const r = await apiPost('/api/storage/delete', { fileIDs: arr.slice(i, i + 50) });
-      ok += (r && r.deleted) || 0;
+      const batch = arr.slice(i, i + 50);
+      try {
+        const r = await apiPost('/api/storage/delete', { fileIDs: batch });
+        ok += (r && r.deleted) || 0;
+        // 本批成功：从已选集合移除，失败重试时不会重复删，计数也准确
+        batch.forEach(p => stSel.delete(p));
+        updateSelCount();
+      } catch (e) {
+        // 单批失败：保留该批在 stSel 中供重试，继续尝试后续批次
+        _delFail = true;
+      }
     }
-    toast('已删除 ' + ok + ' 个文件', 'ok');
+    if (_delFail) {
+      toast('已删除 ' + ok + ' 个，部分批次失败，失败文件仍保持选中可重试', 'err');
+    } else {
+      toast('已删除 ' + ok + ' 个文件', 'ok');
+    }
     loadStorage();
   } catch (e) {
     toast('删除失败：' + e.message + (ok ? '（已成功 ' + ok + ' 个）' : ''), 'err');
@@ -340,10 +375,8 @@ async function uploadOneFile(file) {
   if (lbl.textContent !== '上传文件') return false; // 防重复上传
   lbl.textContent = '上传中…';
   try {
-    const envParam = S.env ? '&env=' + encodeURIComponent(S.env) : '';
-    const resp = await fetch('/api/storage/upload?cloudPath=' + encodeURIComponent(cloudPath) + envParam, { method: 'POST', body: file });
-    let data = null; try { data = await resp.json(); } catch (e) {}
-    if (!resp.ok) throw new Error((data && data.error) || ('HTTP ' + resp.status));
+    // 统一走 common 的 api 封装（自动追加 env 参数、统一错误提示）
+    const data = await apiUpload('/api/storage/upload?cloudPath=' + encodeURIComponent(cloudPath), file);
     toast('已上传：' + (data.fileID || cloudPath), 'ok');
     return true;
   } catch (e) { toast('上传失败：' + e.message, 'err'); return false; }
@@ -356,3 +389,10 @@ async function uploadToCurrent() {
   if (!file) return;
   if (await uploadOneFile(file)) loadStorage();
 }
+
+// ---------- 模块导出 ----------
+export {
+  isImage, setStView, loadStorage, renderStorage, resolveUrls, resolveUrl, previewFile,
+  scanDirs, deleteSelected, delFileOne, uploadOneFile, uploadToCurrent, selectAllPage,
+  clearSel, resetStorage, resetDeleteBtn, hideBatchBar, clearUrlCache, ST_VIEW_KEY
+};

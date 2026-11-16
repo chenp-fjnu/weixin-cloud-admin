@@ -1,10 +1,13 @@
-/* 云端数据管理台 —— 概览 Tab
+/* 云端数据管理台 —— 概览 Tab（ES Module）
    顶部 KPI 卡（集合/文档/目录/扫描体积）+ 集合文档数卡片（占比条）+ 云存储采样概览。
    集合卡片点击跳转数据库 Tab（见 db.js#openCollection）。 */
-'use strict';
+
+import { $, apiGet, esc, fmtNum, fmtSize, ic, S } from './common.js';
+import { openCollection } from './db.js';
 
 // 可选：集合中文标签（key = 集合名，value = 显示名）；未配置的集合直接显示原始集合名
 const COL_LABEL = {};
+let ovSeq = 0; // 请求序号：切环境/连续刷新时丢弃过期响应
 
 // KPI 卡数据：[图标, 色块类, 数值, 标题, 副标题]
 function buildKpis(items) {
@@ -15,7 +18,8 @@ function buildKpis(items) {
   ).join('');
 }
 
-async function loadOverview() {
+async function loadOverview(force) {
+  const seq = ++ovSeq;
   const banner = $('#ovBanner');
   const prev = S.overview;
   if (!prev) {
@@ -27,12 +31,16 @@ async function loadOverview() {
     ]);
   }
   try {
-    const o = await apiGet('/api/overview');
+    // force=1 跳过服务端 60s TTL 缓存强制重算（手动「刷新」按钮）
+    const o = await apiGet('/api/overview' + (force ? '?fresh=1' : ''));
+    if (seq !== ovSeq) return; // 切环境/更新请求已发出，丢弃本次过期响应
     S.overview = o;
     S.overview.at = Date.now();
     $('#ovLoading').style.display = 'none';
     $('#ovBody').style.display = 'block';
-    $('#ovUpdatedAt').textContent = '统计于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false }) + ' · 进入本页自动统计';
+    // 服务端带 60s TTL 缓存：at 为统计时刻（缓存命中时是上次统计时刻），cached 标记是否命中
+    const atTime = o.at ? new Date(o.at).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+    $('#ovUpdatedAt').textContent = '统计于 ' + atTime + (o.cached ? ' · 缓存数据（点「刷新」强制重算）' : ' · 进入本页自动统计');
     // DB 卡片（带占整体文档数比例条）
     const cards = $('#ovCards'); cards.innerHTML = '';
     let total = 0, err = 0;
@@ -80,8 +88,11 @@ async function loadOverview() {
       banner.innerHTML = ic('warning') + '<span>云存储概览失败：' + esc(st.error) + '</span>';
     } else banner.className = 'banner';
   } catch (e) {
+    if (seq !== ovSeq) return;
     $('#ovLoading').style.display = 'none';
     banner.className = 'banner show';
     banner.innerHTML = ic('warning') + '<span>概览加载失败：' + esc(e.message) + '</span>';
   }
 }
+
+export { loadOverview };

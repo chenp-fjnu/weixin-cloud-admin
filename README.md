@@ -26,7 +26,7 @@
 | 数据库操作 | `@cloudbase/node-sdk`（与云函数 `wx-server-sdk` 同套 API） |
 | 存储列举 / 临时 URL / 删除 | `@cloudbase/manager-node`（`listDirectoryFiles` / `getTemporaryUrl` / `deleteFile`） |
 | 存储上传 | `@cloudbase/node-sdk`（`uploadFile`） |
-| 前端 | 零依赖原生 JS + 单页 HTML（`public/index.html` + `public/styles.css` + `public/js/*.js`，无构建） |
+| 前端 | 零依赖原生 JS + 单页 HTML（`public/index.html` + `public/styles.css` + `public/js/*.js`，ES Modules，无构建） |
 
 ## 目录结构
 
@@ -44,9 +44,7 @@
 │       ├── db.js          # 云数据库 Tab + 文档模态框
 │       ├── storage.js     # 云存储 Tab
 │       ├── settings.js    # 环境配置 Tab
-│       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动
-├── .env.example       # 配置模板（仅用于首次启动播种，之后以 config/environments.json 为准）
-├── .env               # 真实配置（已被 .gitignore 忽略，勿提交）
+│       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动（ES Module 入口）
 └── package.json
 ```
 
@@ -60,21 +58,10 @@ npm install
 
 ### 2. 配置凭证
 
-**推荐方式：页面内配置（无需重启）**
-
-直接启动后，打开左侧「环境配置」页 → 点「新增环境」→ 填环境 ID + SecretId + SecretKey → 保存。保存即时生效并持久化到 `config/environments.json`。
-
-**兼容方式：.env 播种（首次启动生效）**
-
-```bash
-cp .env.example .env
-```
-
-编辑 `.env`，填入你的云环境 ID 与腾讯云 API 凭证（须为能访问目标云环境的账号）。
-> - 首次启动时，服务会把 `.env` 中的环境列表播种到 `config/environments.json`；此后以该文件为准，改 `.env` 需删除 `config/environments.json` 后重启才会重新播种。
+打开左侧「环境配置」页 → 点「新增环境」→ 填环境 ID + SecretId + SecretKey → 保存，即时生效并持久化到 `config/environments.json`（无需重启）。
 > - 环境 ID 在 [云开发控制台](https://console.cloud.tencent.com/tcb) 获取
 > - SecretId / SecretKey 在 [腾讯云控制台 → API 密钥管理](https://console.cloud.tencent.com/api/v3/secret-key) 获取
-> - `config/` 与 `.env` 均已被 `.gitignore` 忽略，**切勿提交真实密钥**
+> - `config/` 已被 `.gitignore` 忽略，**切勿提交真实密钥**
 
 ### 3. 启动
 
@@ -95,21 +82,25 @@ npm start
 ==========================================================
 ```
 
+### 4. 开发校验（可选）
+
+```bash
+npm run check   # 语法检查：7 个 JS 文件（server + 前端 6 模块）逐一 node --check
+npm run smoke   # 隔离冒烟测试：临时配置目录 + 假凭证 + 独立端口启动服务，16 项断言（不触碰真实 config/）
+npm test        # check + smoke 一起跑
+```
+
 ## 配置项
 
-环境（环境 ID + 凭证）由**页面「环境配置」页**管理，持久化在 `config/environments.json`。`.env` 仅在首次启动（无 `config/environments.json`）时作为播种来源。
+环境（环境 ID + 凭证）由**页面「环境配置」页**管理，持久化在 `config/environments.json`。服务自身的运行选项通过**启动时注入的环境变量**设置（如 `ADMIN_PORT=8787 npm start`）。
 
-| 来源 | 变量 | 说明 |
-| --- | --- | --- |
-| `.env`（首次播种） | `TCB_ENV_ID` | 默认云环境 ID |
-| `.env`（首次播种） | `TCB_ENV_IDS` | 可切换环境列表（逗号分隔） |
-| `.env`（首次播种） | `TCB_SECRET_ID` / `TCB_SECRET_KEY` | 第 1 个环境的腾讯云凭证 |
-| `.env`（首次播种） | `TCB_SECRET_ID_N` / `TCB_SECRET_KEY_N` | 第 N 个环境的独立凭证（跨账号场景） |
-| `.env` | `KNOWN_COLLECTIONS` | 兜底集合名单（`listCollections` 失败时生效，逗号分隔） |
-| `.env` | `ADMIN_PORT` | 服务端口（默认 `8787`） |
-| `.env` | `ADMIN_HOST` | 绑定地址（默认 `127.0.0.1`，**务必保持本机回环**） |
-| `.env` | `ADMIN_TOKEN` | 设置后所有 `/api` 请求须带 `x-admin-token: <值>` 请求头 |
-| `.env` | `ADMIN_UPLOAD_LIMIT` | 单文件上传上限（字节，默认 20MB） |
+| 变量 | 说明 |
+| --- | --- |
+| `KNOWN_COLLECTIONS` | 兜底集合名单（`listCollections` 失败时生效，逗号分隔；默认置空，由你按需配置） |
+| `ADMIN_PORT` | 服务端口（默认 `8787`） |
+| `ADMIN_HOST` | 绑定地址（默认 `127.0.0.1`，**务必保持本机回环**） |
+| `ADMIN_TOKEN` | 设置后所有 `/api` 请求须带 `x-admin-token: <值>` 请求头 |
+| `ADMIN_UPLOAD_LIMIT` | 单文件上传上限（字节，默认 `20MB`） |
 
 ## API 一览
 
@@ -124,15 +115,15 @@ npm start
 | DELETE | `/api/environments?env=` | 删除环境（删除默认环境时自动改选其余第一个） |
 | PUT | `/api/environments/default` | 设置默认环境（body: `{ envId }`） |
 | POST | `/api/environments/test` | 测试凭证连通性（body: `{ envId, secretId?, secretKey? }`，密钥缺省时用已保存凭证） |
-| GET | `/api/overview` | 概览：各集合文档数 + 云存储统计 |
+| GET | `/api/overview` | 概览：各集合文档数 + 云存储统计（60s 服务端 TTL 缓存；响应含 `at`/`cached`，`?fresh=1` 强制重算） |
 | GET | `/api/collections` | 集合名列表 |
-| GET | `/api/collection?name=&page=&size=&sort=&sortDir=&field=&q=` | 文档分页查询（`q` 对 `field` 做不区分大小写正则匹配） |
+| GET | `/api/collection?name=&page=&size=&sort=&sortDir=&field=&q=` | 文档分页查询（`q` 对 `field` 做不区分大小写正则匹配；`q` 须配合 `field` 使用，`field` 为空时返回 400） |
 | GET | `/api/doc?name=&id=` | 读取单条文档 |
 | POST | `/api/collection?name=` | 新增文档（JSON body，不允许指定 `_id`） |
 | PUT | `/api/doc?name=&id=` | 更新文档（JSON body 整包替换） |
 | DELETE | `/api/doc?name=&id=` | 删除文档 |
 | GET | `/api/storage?prefix=&maxKeys=` | 列举某前缀下一级子目录与文件 |
-| GET | `/api/storage/urls?fileIDs=a,b,c` | 批量获取临时访问 URL（2 小时有效） |
+| POST | `/api/storage/urls` | 批量获取临时访问 URL（body: `{ fileIDs: [...] }`，2 小时有效） |
 | POST | `/api/storage/delete` | 批量删除文件（body: `{ fileIDs: [...] }`） |
 | POST | `/api/storage/upload?cloudPath=` | 上传文件（raw body，上限见 `ADMIN_UPLOAD_LIMIT`） |
 | GET | `/api/storage/walk?prefix=&max=` | 递归扫描前缀下文件（概览 / 子目录聚合用） |
@@ -153,14 +144,14 @@ npm start
 到「环境配置」页点该环境行的「编辑」，补全 SecretId / SecretKey 后保存（也可在模态框里先点「测试连通性」验证）。
 
 **Q: 换机器 / 想重置环境列表？**
-删除 `config/environments.json` 后重启服务，将重新用 `.env` 播种；或在「环境配置」页逐个删除后重建。
+删除 `config/environments.json` 后重启服务，再在「环境配置」页逐个新增即可。
 
 **Q: 集合列表只看到几个内置示例集合？**
-这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请到「环境配置」页点「测试」确认凭证能否访问该环境，或在 `.env` 中用 `KNOWN_COLLECTIONS` 配置你自己的集合名单。
+这是 `listCollections` 接口失败时的兜底名单（`KNOWN_COLLECTIONS`）。请到「环境配置」页点「测试」确认凭证能否访问该环境，或启动时用 `KNOWN_COLLECTIONS` 环境变量配置你自己的集合名单。
 
 **Q: 图片预览失效？**
 临时 URL 有效期 2 小时，刷新页面重新获取即可。
 
 ## 许可
 
-内部运维工具，请勿外泄 `.env` 中的腾讯云密钥。
+内部运维工具，请勿外泄 `config/environments.json` 中的腾讯云密钥。
