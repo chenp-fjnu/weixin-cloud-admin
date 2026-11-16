@@ -261,7 +261,7 @@ function selectAllPage() {
 function resetStorage() {
   stSel.clear();
   S.st.prefix = ''; S.st.loadedAt = 0; S.st.filter = ''; S.st.sort = 'name';
-  S.st.page = 1; S.st.pageSize = 60;
+  S.st.page = 1; S.st.pageSize = 30;
   S.st.allFiles = []; S.st.allTruncated = false; S.st.allLoadedAt = 0;
   stUrlSeq++; // 使在途缩略图 URL 请求过期
   clearUrlCache();

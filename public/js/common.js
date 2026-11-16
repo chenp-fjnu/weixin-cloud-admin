@@ -182,7 +182,7 @@ const S = {
   overview: null,
   db: { collection: '', page: 1, size: 20, total: 0, docs: [], fields: [], cols: [], sort: '', sortDir: 'desc', q: '', field: '' },
   st: { prefix: '', files: [], dirs: [], loadedAt: 0, filter: '', sort: 'name',
-        page: 1, pageSize: 60,
+        page: 1, pageSize: 30,
         allFiles: [], allTruncated: false, allLoadedAt: 0 }
 };
 try { S.env = localStorage.getItem(ENV_LS_KEY) || ''; } catch (e) { /* ignore */ }
