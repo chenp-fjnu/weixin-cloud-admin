@@ -537,19 +537,23 @@ function renderStorageAcl(acl, rule) {
     writeV = rule.write == null ? '' : (typeof rule.write === 'boolean' ? String(rule.write) : String(rule.write));
   }
   box.innerHTML =
-    '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
-      '<label class="fld" style="margin:0;min-width:280px"><span>存储权限（ACL）</span>' +
-        '<select id="stAclSel" style="width:100%">' + presetOpts + '</select></label>' +
-      '<button class="btn sm" id="stAclSave">保存权限</button>' +
-    '</div>' +
-    '<div id="stAclRuleWrap" style="display:' + (isCustom ? 'block' : 'none') + ';margin-top:12px">' +
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-        '<label class="fld" style="margin:0;flex:1;min-width:220px"><span>read 规则（true/false 或表达式）</span>' +
-          '<input type="text" id="stAclRead" class="mono" value="' + esc(readV) + '" placeholder="如 resource.openid == auth.uid" /></label>' +
-        '<label class="fld" style="margin:0;flex:1;min-width:220px"><span>write 规则（true/false 或表达式）</span>' +
-          '<input type="text" id="stAclWrite" class="mono" value="' + esc(writeV) + '" placeholder="如 false" /></label>' +
+    '<div class="panel" style="margin:0 0 16px;padding:14px 16px">' +
+      '<div class="pagehead" style="margin:0 0 12px"><div><h2 style="margin:0">存储权限（ACL）</h2>' +
+      '<div class="sub">环境级云存储读写权限 · 影响整个环境的文件访问</div></div></div>' +
+
+      '<h2 class="sect">权限设置<span class="ln"></span></h2>' +
+      '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
+        '<label class="fld" style="margin:0;min-width:340px"><span>权限预设</span><select id="stAclSel" style="width:100%">' + presetOpts + '</select></label>' +
+        '<button class="btn sm" id="stAclSave">保存权限</button>' +
       '</div>' +
-      '<p class="hint" style="margin-top:8px">表达式语法同云开发安全规则：可引用 <code>auth.uid</code> / <code>resource.openid</code> 等；<code>true</code>/<code>false</code> 表示恒允许/拒绝。</p>' +
+      '<div id="stAclRuleWrap" style="display:' + (isCustom ? 'block' : 'none') + ';margin-top:12px">' +
+        '<label class="fld" style="margin:0"><span>read 规则表达式</span>' +
+          '<textarea class="code" id="stAclRead" style="width:100%;min-height:56px;font-size:12px" spellcheck="false" placeholder="true / false 或 如 resource.openid == auth.uid">' + esc(readV) + '</textarea>' +
+          '<span class="fdesc">true=恒允许 · false=恒拒绝 · 其余为安全规则表达式</span></label>' +
+        '<label class="fld" style="margin:8px 0 0"><span>write 规则表达式</span>' +
+          '<textarea class="code" id="stAclWrite" style="width:100%;min-height:56px;font-size:12px" spellcheck="false" placeholder="true / false 或 如 resource.openid == auth.uid">' + esc(writeV) + '</textarea>' +
+          '<span class="fdesc">可引用 <code>auth.uid</code> / <code>resource.openid</code> 等</span></label>' +
+      '</div>' +
     '</div>';
   $('#stAclSel').addEventListener('change', function () {
     $('#stAclRuleWrap').style.display = this.value === 'CUSTOM' ? 'block' : 'none';
@@ -566,6 +570,7 @@ async function saveStorageAcl() {
     if (!read || !write) return toast('自定义规则须填写 read 与 write', 'err');
     body.rule = { read: parseAclVal(read), write: parseAclVal(write) };
   }
+  if (!confirm('确认将环境存储权限改为 ' + acl + ' ？此操作影响整个环境的文件读写。')) return;
   const btn = $('#stAclSave'); btn.disabled = true; btn.textContent = '保存中…';
   try {
     await apiPut('/api/storage/acl', body);

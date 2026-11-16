@@ -37,7 +37,9 @@ function state(envId) {
             Timeout: 3, MemorySize: 256, Role: 'cos-roles/cos-full-access',
             Description: 'mock hello', Namespace: '', Status: 'Active',
             AddTime: '2024-01-01T00:00:00Z', ModTime: '2024-01-02T00:00:00Z',
-            EnvironmentVariables: { FOO: 'bar' }
+            // 真实 SDK getFunctionDetail 返回 IFunctionInfo：环境变量在
+            // Environment.Variables = [{ Key, Value }]（与 server.js 读取逻辑一致）
+            Environment: { Variables: [{ Key: 'FOO', Value: 'bar' }] }
           },
           triggers: [{ name: 'timer-hello', type: 'timer', config: '0 0 * * * *' }]
         }
@@ -222,7 +224,8 @@ function manager(envId) {
           const obj = {};
           if (Array.isArray(cfg.envVariables)) cfg.envVariables.forEach((v) => { obj[v.key] = v.value; });
           else Object.assign(obj, cfg.envVariables);
-          f.info.EnvironmentVariables = obj;
+          // 写回与真实 SDK 一致的 IFunctionInfo 结构
+          f.info.Environment = { Variables: Object.keys(obj).map((k) => ({ Key: k, Value: String(obj[k]) })) };
         }
         f.info.ModTime = new Date().toISOString();
         return { ok: true };

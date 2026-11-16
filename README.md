@@ -67,7 +67,7 @@
 │       └── main.js        # Tab 切换 / 环境切换 / 事件绑定 / 启动（ES Module 入口）
 ├── scripts/
 │   ├── check.js           # 语法检查（10 个 JS 逐一 node --check）
-│   ├── smoke.js           # 隔离冒烟测试（Mock 模式：临时配置目录 + 内存假 SDK，65 项断言）
+│   ├── smoke.js           # 隔离冒烟测试（Mock 模式：临时配置目录 + 内存假 SDK，66 项断言）
 │   ├── e2e.js             # Playwright E2E（未安装 playwright 时自动 SKIPPED）
 │   └── mock-cloudbase.js  # 内存版 CloudBase SDK（MOCK_CLOUDBASE=1 时替代真实 SDK；覆盖文档 / 存储 / 索引 / 集合权限 / 存储 ACL / 云函数 / 触发器）
 └── package.json
@@ -111,7 +111,7 @@ npm start
 
 ```bash
 npm run check   # 语法检查：10 个 JS 文件逐一 node --check
-npm run smoke   # 隔离冒烟测试：临时配置目录 + 内存 Mock SDK（MOCK_CLOUDBASE=1），65 项断言（不触碰真实 config/，零网络零凭证）
+npm run smoke   # 隔离冒烟测试：临时配置目录 + 内存 Mock SDK（MOCK_CLOUDBASE=1），66 项断言（不触碰真实 config/，零网络零凭证）
 npm run e2e     # Playwright 无头浏览器 E2E（需先 npm i -D playwright && npx playwright install chromium；未安装则 SKIPPED）
 npm test        # check + smoke + e2e 一起跑
 ```

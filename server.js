@@ -919,12 +919,20 @@ const handlers = {
         const t = await scfService(envId).call({ Action: 'ListTriggers', Param: { EnvId: envId, Name: name } });
         triggers = (t && t.Triggers) || [];
       } catch (e) { /* 触发器列举失败不阻断详情 */ }
+      // 真实 SDK（getFunctionDetail → IFunctionInfo）的环境变量在
+      // d.Environment.Variables = [{ Key, Value }]；个别旧版本返回扁平对象
+      // d.EnvironmentVariables = { KEY: value }，两者都兼容，否则前端永远显示「无环境变量」
+      const envVars = (d.Environment && Array.isArray(d.Environment.Variables))
+        ? d.Environment.Variables.map(v => ({ key: v.Key != null ? String(v.Key) : '', value: v.Value != null ? String(v.Value) : '' }))
+        : (d.EnvironmentVariables && typeof d.EnvironmentVariables === 'object')
+          ? Object.keys(d.EnvironmentVariables).map(k => ({ key: k, value: d.EnvironmentVariables[k] != null ? String(d.EnvironmentVariables[k]) : '' }))
+          : [];
       const info = {
         name: d.FunctionName || name, runtime: d.Runtime || '', handler: d.Handler || '',
         timeout: d.Timeout != null ? d.Timeout : 0, memory: d.MemorySize != null ? d.MemorySize : 0,
         role: d.Role || '', description: d.Description || '', namespace: d.Namespace || '',
         status: d.Status || '', addTime: d.AddTime || '', modTime: d.ModTime || '',
-        envVariables: d.EnvironmentVariables ? Object.keys(d.EnvironmentVariables).map(k => ({ key: k, value: d.EnvironmentVariables[k] })) : []
+        envVariables: envVars
       };
       return sendJson(res, 200, { info, triggers });
     } catch (e) { return sendError(res, 500, '获取函数详情失败：' + (e.message || e)); }

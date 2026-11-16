@@ -243,6 +243,7 @@ function killServer() {
     check('函数列表 → 200 且含 hello', f1.status === 200 && f1.json && f1.json.functions.some((f) => f.name === 'hello'), f1.body);
     const f2 = await request('GET', '/api/function?name=hello');
     check('函数详情 → 200 且含触发器', f2.status === 200 && f2.json && f2.json.info && f2.json.info.runtime && Array.isArray(f2.json.triggers) && f2.json.triggers.some((t) => t.name === 'timer-hello'), f2.body);
+    check('详情含环境变量 FOO=bar（真实 SDK 结构 Environment.Variables）', f2.json && Array.isArray(f2.json.info.envVariables) && f2.json.info.envVariables.some((v) => v.key === 'FOO' && v.value === 'bar'), f2.body);
     const f3 = await request('POST', '/api/function/config?name=hello', { timeout: 5, memorySize: 512 });
     check('改函数配置 → 200', f3.status === 200, 'got ' + f3.status + ' ' + f3.body);
     const f4 = await request('GET', '/api/function?name=hello');
