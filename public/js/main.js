@@ -1,5 +1,5 @@
 /* 云端数据管理台 —— 启动与跨 Tab 逻辑（ES Module 入口）
-   侧边导航切换（快捷键 1/2/3）、主题切换、连接状态、环境下拉/切换、全部事件绑定、DOMContentLoaded 启动。
+   侧边导航切换（快捷键 1–5）、主题切换、连接状态、环境下拉/切换、全部事件绑定、DOMContentLoaded 启动。
    其余模块（common/overview/db/storage/settings）经 import 引入；main ↔ settings 为函数级循环引用（仅调用时求值，安全）。 */
 
 import { $, $$, S, apiGet, apiPost, toast, ic, initIcons, applyTheme, toggleTheme, THEME_LS_KEY, ENV_LS_KEY, copyText } from './common.js';
@@ -149,12 +149,12 @@ function labelBtn(id, icon, text) {
 function bindEvents() {
   // 侧边导航切换
   $$('.navitem').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
-  // 快捷键 1/2/3/4 切换 Tab（输入框聚焦时不触发）
+  // 快捷键 1–5 切换 Tab（输入框聚焦时不触发）
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = (document.activeElement || {}).tagName || '';
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    const map = { '1': 'overview', '2': 'db', '3': 'storage', '4': 'settings', '5': 'functions' };
+    const map = { '1': 'overview', '2': 'db', '3': 'storage', '4': 'functions', '5': 'settings' };
     if (map[e.key]) switchTab(map[e.key]);
   });
 

@@ -206,19 +206,26 @@ function killServer() {
     const ix5 = await request('GET', '/api/collection/indexes?name=demo');
     check('删除后索引列表不含 smoke_ix', ix5.json && ix5.json.indexes && !ix5.json.indexes.some((x) => x.name === 'smoke_ix'), ix5.body);
 
-    // 11. 集合权限（安全规则）：读取 → 改 PRIVATE → CUSTOM → 非法值 400
+    // 11. 集合权限（安全规则）：读取 → 改 PRIVATE → read/write CUSTOM → 非法值 400
     const pm1 = await request('GET', '/api/collection/permission?name=demo');
     check('集合权限读取 → 200', pm1.status === 200 && pm1.json && typeof pm1.json.acl === 'string', pm1.body);
     const pm2 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'PRIVATE' });
     check('改集合权限 PRIVATE → 200', pm2.status === 200, 'got ' + pm2.status + ' ' + pm2.body);
     const pm3 = await request('GET', '/api/collection/permission?name=demo');
     check('权限读取回 PRIVATE', pm3.json && pm3.json.acl === 'PRIVATE', pm3.body);
-    const pm4 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'CUSTOM', rule: 'auth.uid != null' });
-    check('改集合权限 CUSTOM 带规则 → 200', pm4.status === 200, 'got ' + pm4.status + ' ' + pm4.body);
+    const pm4 = await request('PUT', '/api/collection/permission?name=demo', {
+      acl: 'CUSTOM', rule: { read: 'auth.uid != null', write: 'auth.uid == resource.openid' }
+    });
+    check('改集合权限 CUSTOM 带 read/write 规则 → 200', pm4.status === 200, 'got ' + pm4.status + ' ' + pm4.body);
     const pm5 = await request('GET', '/api/collection/permission?name=demo');
-    check('CUSTOM 规则回显', pm5.json && pm5.json.acl === 'CUSTOM' && /auth\.uid/.test(pm5.json.rule || ''), pm5.body);
-    const pm6 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'CUSTOM' });
-    check('CUSTOM 缺规则 → 400', pm6.status === 400, 'got ' + pm6.status);
+    let pm5Rule = null;
+    try { pm5Rule = JSON.parse(pm5.json && pm5.json.rule || '{}'); } catch (_) {}
+    check('CUSTOM read/write 规则回显', pm5.json && pm5.json.acl === 'CUSTOM' &&
+      pm5Rule && pm5Rule.read === 'auth.uid != null' && pm5Rule.write === 'auth.uid == resource.openid', pm5.body);
+    const pm6 = await request('PUT', '/api/collection/permission?name=demo', {
+      acl: 'CUSTOM', rule: { read: 'auth.uid != null' }
+    });
+    check('CUSTOM 缺 write 规则 → 400', pm6.status === 400, 'got ' + pm6.status);
     const pm7 = await request('PUT', '/api/collection/permission?name=demo', { acl: 'BOGUS' });
     check('非法权限值 → 400', pm7.status === 400, 'got ' + pm7.status);
 

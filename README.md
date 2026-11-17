@@ -27,10 +27,12 @@
 | Tab | 能力 |
 | --- | --- |
 | 概览 | 各集合文档数统计、云存储顶层目录数 / 总文件数 / 总大小、子目录聚合视图 |
-| 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除）；「索引 / 权限」面板：查看 / 创建 / 删除集合索引（多字段、方向、唯一），查看 / 修改集合安全规则（预设下拉 + CUSTOM 规则表达式） |
-| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效）；顶部 ACL 卡片：查看 / 修改环境级存储权限（READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM） |
+| 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除）；「索引 / 权限」面板：查看 / 创建 / 删除集合索引；按当前集合查看 / 修改安全规则预设，CUSTOM 分别设置 read 与 write 表达式 |
+| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效）；顶部 ACL 卡片：查看 / 修改环境级存储权限（READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM），明确影响当前环境全部文件 |
 | 云函数 | 函数列表 → 展开详情：基础信息 / 配置调整（内存 / 超时）/ 环境变量 / 触发器（增删）/ 在线调用测试（JSON 参数 → 结果 + 日志 + 耗时）/ 删除函数 |
 | 环境配置 | 新增 / 编辑 / 删除云环境与凭证、设默认、测试凭证连通性；列表仅显示脱敏 SecretId |
+
+侧栏与快捷键顺序：概览（1）→ 云数据库（2）→ 云存储（3）→ 云函数（4）→ 环境配置（5）。
 
 ## 技术栈
 
@@ -157,7 +159,7 @@ npm test        # check + smoke + e2e 一起跑
 | POST | `/api/collection/indexes?name=` | 创建索引（body: `{ indexName, keys: [{ field, direction: "asc"|"desc" }], unique? }`，多字段复合索引） |
 | DELETE | `/api/collection/indexes?name=&index=` | 删除指定索引 |
 | GET | `/api/collection/permission?name=` | 集合安全规则（`acl`: READONLY/PRIVATE/ADMINWRITE/ADMINONLY/CUSTOM + `rule` 表达式） |
-| PUT | `/api/collection/permission?name=` | 修改集合安全规则（body: `{ acl, rule? }`；CUSTOM 时 `rule` 必填，缺省 400） |
+| PUT | `/api/collection/permission?name=` | 修改集合安全规则（body: `{ acl, rule? }`；CUSTOM 时 `rule: { read, write }` 两个非空表达式均必填，缺省 400） |
 | GET | `/api/storage/acl` | 环境级存储权限（`acl` + CUSTOM 时 `rule: { read, write }`） |
 | PUT | `/api/storage/acl` | 修改存储权限（body: `{ acl, rule? }`；CUSTOM 时 `rule.read` / `rule.write` 必填，boolean 或规则表达式） |
 | GET | `/api/functions` | 云函数列表（`functions: [{ name }]` + `total`） |

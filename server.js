@@ -858,11 +858,15 @@ const handlers = {
     if (!['READONLY', 'PRIVATE', 'ADMINWRITE', 'ADMINONLY', 'CUSTOM'].includes(acl)) {
       return sendError(res, 400, '权限类型非法（可选：READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM）');
     }
-    const rule = String((body && body.rule) || '').trim();
-    if (acl === 'CUSTOM' && !rule) return sendError(res, 400, '自定义规则（CUSTOM）须填写 read / write 规则表达式');
+    const rule = body && body.rule;
+    if (acl === 'CUSTOM' && (!rule || typeof rule !== 'object' ||
+      typeof rule.read !== 'string' || !rule.read.trim() ||
+      typeof rule.write !== 'string' || !rule.write.trim())) {
+      return sendError(res, 400, '自定义规则（CUSTOM）须分别填写 read / write 规则表达式');
+    }
     try {
       const param = { EnvId: envId, CollectionName: name, AclTag: acl };
-      if (acl === 'CUSTOM') param.Rule = JSON.stringify({ read: rule });
+      if (acl === 'CUSTOM') param.Rule = JSON.stringify({ read: rule.read.trim(), write: rule.write.trim() });
       await tcbService(envId).call({ Action: 'ModifySafeRule', Param: param });
       audit('collection.permission', envId, name, 'acl=' + acl);
       return sendJson(res, 200, { ok: true });

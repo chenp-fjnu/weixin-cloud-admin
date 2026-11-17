@@ -442,6 +442,26 @@ const _ACL_PRESETS = [
   { v: 'CUSTOM', t: '自定义（CUSTOM）· 按安全规则表达式' }
 ];
 
+function dbRuleParts(rule) {
+  if (rule && typeof rule === 'object') {
+    return {
+      read: rule.read == null ? '' : String(rule.read),
+      write: rule.write == null ? '' : String(rule.write)
+    };
+  }
+  if (typeof rule !== 'string' || !rule) return { read: '', write: '' };
+  try {
+    const parsed = JSON.parse(rule);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        read: parsed.read == null ? '' : String(parsed.read),
+        write: parsed.write == null ? '' : String(parsed.write)
+      };
+    }
+  } catch (e) { /* 兼容直接保存的单条规则表达式 */ }
+  return { read: rule, write: '' };
+}
+
 function toggleDbMeta() {
   const panel = $('#dbMetaPanel');
   const show = panel.style.display === 'none';
@@ -497,7 +517,7 @@ function renderDbMeta(idx, perm) {
         '</tr>').join('');
   // 权限下拉
   const acl = (perm && !perm.error) ? perm.acl : 'READONLY';
-  const permRule = (perm && !perm.error) ? perm.rule : '';
+  const permRule = dbRuleParts((perm && !perm.error) ? perm.rule : '');
   const aclOpts = _ACL_PRESETS.map(p =>
     '<option value="' + p.v + '"' + (p.v === acl ? ' selected' : '') + '>' + esc(p.t) + '</option>').join('');
   panel.innerHTML =
@@ -520,14 +540,18 @@ function renderDbMeta(idx, perm) {
       '<h2 class="sect" style="margin-top:18px">集合权限（安全规则）<span class="ln"></span></h2>' +
       (perm && perm.error
         ? '<p class="hint" style="color:var(--danger)">读取失败：' + esc(perm.error) + '</p>'
-        : '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
+        : '<p class="hint">仅作用于当前集合的应用端读写访问；切换集合后需分别配置。自定义规则必须分别填写 read 与 write。</p>' +
+          '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
             '<label class="fld" style="margin:0;min-width:320px"><span>权限预设</span><select id="permAcl" style="width:100%">' + aclOpts + '</select></label>' +
             '<button class="btn sm" id="permSave">保存权限</button>' +
           '</div>' +
           '<div id="permRuleWrap" style="display:' + (acl === 'CUSTOM' ? 'block' : 'none') + ';margin-top:10px">' +
             '<label class="fld" style="margin:0"><span>read 规则表达式</span>' +
-            '<textarea class="code" id="permRule" style="width:100%;min-height:56px;font-size:12px" spellcheck="false">' + esc(permRule) + '</textarea>' +
-            '<span class="fdesc">如 <code>auth.uid != null</code>；语法同云开发安全规则</span></label>' +
+            '<textarea class="code" id="permReadRule" style="width:100%;min-height:56px;font-size:12px" spellcheck="false">' + esc(permRule.read) + '</textarea>' +
+            '<span class="fdesc">控制读取当前集合文档的条件，如 <code>auth.uid != null</code>。</span></label>' +
+            '<label class="fld" style="margin:8px 0 0"><span>write 规则表达式</span>' +
+            '<textarea class="code" id="permWriteRule" style="width:100%;min-height:56px;font-size:12px" spellcheck="false">' + esc(permRule.write) + '</textarea>' +
+            '<span class="fdesc">控制新增、修改、删除当前集合文档的条件；语法同云开发安全规则。</span></label>' +
           '</div>') +
     '</div>';
 
@@ -580,11 +604,12 @@ function renderDbMeta(idx, perm) {
       const acl = $('#permAcl').value;
       const body = { acl };
       if (acl === 'CUSTOM') {
-        const rule = $('#permRule').value.trim();
-        if (!rule) return toast('自定义规则（CUSTOM）须填写 read 规则表达式', 'err');
-        body.rule = rule;
+        const read = $('#permReadRule').value.trim();
+        const write = $('#permWriteRule').value.trim();
+        if (!read || !write) return toast('自定义规则（CUSTOM）须分别填写 read 与 write 表达式', 'err');
+        body.rule = { read, write };
       }
-      if (!confirm('确认将集合 ' + name + ' 的安全规则改为 ' + acl + ' ？此操作影响所有该集合的读写。')) return;
+      if (!confirm('确认将集合 ' + name + ' 的安全规则改为 ' + acl + '？此设置影响该集合应用端用户的读写访问。')) return;
       const btn = $('#permSave'); btn.disabled = true;
       apiPut('/api/collection/permission?name=' + encodeURIComponent(name), body)
         .then(() => { toast('集合权限已保存', 'ok'); loadDbMeta(); })

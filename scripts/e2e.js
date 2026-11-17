@@ -76,6 +76,9 @@ function get(p) {
     // 3. 首页渲染：5 个导航项
     await page.goto('http://' + HOST + ':' + PORT + '/', { waitUntil: 'networkidle' });
     check('导航项渲染（5 个）', (await page.locator('.navitem').count()) === 5, 'got ' + (await page.locator('.navitem').count()));
+    const navOrder = await page.locator('.navitem').evaluateAll(items => items.map(item => item.dataset.tab).join(','));
+    check('导航顺序（概览 / 数据库 / 存储 / 云函数 / 环境配置）',
+      navOrder === 'overview,db,storage,functions,settings', navOrder);
 
     // 4. 切到数据库页：集合下拉出现 demo，initDb 自动加载后出现 seed 文档行
     await page.click('[data-tab="db"]');

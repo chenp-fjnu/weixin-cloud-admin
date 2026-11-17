@@ -539,7 +539,8 @@ function renderStorageAcl(acl, rule) {
   box.innerHTML =
     '<div class="panel" style="margin:0 0 16px;padding:14px 16px">' +
       '<div class="pagehead" style="margin:0 0 12px"><div><h2 style="margin:0">存储权限（ACL）</h2>' +
-      '<div class="sub">环境级云存储读写权限 · 影响整个环境的文件访问</div></div></div>' +
+      '<div class="sub">环境级云存储读写权限 · 影响当前环境全部文件的应用端访问</div></div></div>' +
+      '<p class="hint">此权限不是目录级设置：更改后会影响整个云存储环境。自定义规则分别控制文件读取和写入；保存前请确认不会意外开放敏感文件。</p>' +
 
       '<h2 class="sect">权限设置<span class="ln"></span></h2>' +
       '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
