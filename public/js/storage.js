@@ -502,11 +502,11 @@ async function uploadToCurrent() {
 // ---------- 存储 ACL（权限） ----------
 // 五档：READONLY 只读 / PRIVATE 私有 / ADMINWRITE 管理写 / ADMINONLY 仅管理 / CUSTOM 自定义规则
 const ACL_PRESETS = [
-  { v: 'READONLY', t: '只读（READONLY）· 所有用户可读，仅创建者和管理员可写' },
-  { v: 'PRIVATE', t: '私有（PRIVATE）· 仅创建者及管理员可读写' },
-  { v: 'ADMINWRITE', t: '管理写（ADMINWRITE）· 所有用户可读，仅管理员可写' },
-  { v: 'ADMINONLY', t: '仅管理（ADMINONLY）· 仅管理员可读写' },
-  { v: 'CUSTOM', t: '自定义（CUSTOM）· 按安全规则表达式' }
+  { v: 'READONLY', title: '公开读取', read: '所有用户可读', write: '仅创建者和管理员可写' },
+  { v: 'PRIVATE', title: '私有访问', read: '仅创建者和管理员可读', write: '仅创建者和管理员可写' },
+  { v: 'ADMINWRITE', title: '公开读取 · 管理写入', read: '所有用户可读', write: '仅管理员可写' },
+  { v: 'ADMINONLY', title: '仅管理员', read: '仅管理员可读', write: '仅管理员可写' },
+  { v: 'CUSTOM', title: '自定义规则', read: '由 read 表达式决定', write: '由 write 表达式决定' }
 ];
 let _aclSeq = 0;
 
@@ -527,8 +527,6 @@ async function loadStorageAcl() {
 
 function renderStorageAcl(acl, rule) {
   const box = $('#stAclBox');
-  const presetOpts = ACL_PRESETS.map(p =>
-    '<option value="' + p.v + '"' + (p.v === acl ? ' selected' : '') + '>' + esc(p.t) + '</option>').join('');
   const isCustom = acl === 'CUSTOM';
   // 规则解析：rule 为 {read, write} 两字段（各为 boolean 或表达式字符串）
   let readV = '', writeV = '';
@@ -536,35 +534,78 @@ function renderStorageAcl(acl, rule) {
     readV = rule.read == null ? '' : (typeof rule.read === 'boolean' ? String(rule.read) : String(rule.read));
     writeV = rule.write == null ? '' : (typeof rule.write === 'boolean' ? String(rule.write) : String(rule.write));
   }
+  const choices = ACL_PRESETS.map(p =>
+    '<label class="perm-choice' + (p.v === acl ? ' selected' : '') + '">' +
+      '<input type="radio" name="storageAcl" value="' + p.v + '"' + (p.v === acl ? ' checked' : '') + '>' +
+      '<span class="perm-choice-body">' +
+        '<span class="perm-choice-head"><strong>' + esc(p.title) + '</strong><code>' + p.v + '</code></span>' +
+        '<span class="perm-right"><b>读取</b><span>' + esc(p.read) + '</span></span>' +
+        '<span class="perm-right"><b>写入</b><span>' + esc(p.write) + '</span></span>' +
+      '</span>' +
+    '</label>'
+  ).join('');
   box.innerHTML =
     '<div class="panel" style="margin:0 0 16px;padding:14px 16px">' +
       '<div class="pagehead" style="margin:0 0 12px"><div><h2 style="margin:0">存储权限（ACL）</h2>' +
       '<div class="sub">环境级云存储读写权限 · 影响当前环境全部文件的应用端访问</div></div></div>' +
-      '<p class="hint">READONLY / PRIVATE / ADMINWRITE / ADMINONLY 是整个环境的默认权限。平台没有独立的目录 ACL；需要按敏感目录细分时，选择 CUSTOM 并在规则中加入 <code>resource.path</code> 条件。</p>' +
-
-      '<h2 class="sect">权限设置<span class="ln"></span></h2>' +
-      '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
-        '<label class="fld" style="margin:0;min-width:340px"><span>权限预设</span><select id="stAclSel" style="width:100%">' + presetOpts + '</select></label>' +
-        '<button class="btn sm" id="stAclSave">保存权限</button>' +
+      '<div class="perm-scope"><span class="perm-scope-label">作用范围</span><span id="stAclSummary"></span></div>' +
+      '<h2 class="sect">选择权限<span class="ln"></span></h2>' +
+      '<div class="perm-choice-grid" role="radiogroup" aria-label="云存储访问权限">' + choices + '</div>' +
+      '<div id="stAclRuleWrap" class="perm-custom"' + (isCustom ? '' : ' style="display:none"') + '>' +
+        '<div class="perm-custom-head"><div><h3>自定义读写规则</h3><span>分别定义文件读取与写入条件</span></div></div>' +
+        '<label class="fld"><span>读取规则（read）</span>' +
+          '<textarea class="code" id="stAclRead" style="width:100%;min-height:72px;font-size:12px" spellcheck="false" placeholder="true / false 或安全规则表达式">' + esc(readV) + '</textarea>' +
+          '<span class="fdesc">可使用 <code>auth.uid</code>、<code>resource.openid</code>、<code>resource.path</code> 等规则变量。</span></label>' +
+        '<label class="fld"><span>写入规则（write）</span>' +
+          '<textarea class="code" id="stAclWrite" style="width:100%;min-height:72px;font-size:12px" spellcheck="false" placeholder="true / false 或安全规则表达式">' + esc(writeV) + '</textarea>' +
+          '<span class="fdesc">示例：<code>/^private\\//.test(resource.path) &amp;&amp; resource.openid == auth.uid</code></span></label>' +
+        '<div class="perm-warning">自定义规则会替代预设，并完整作用于当前环境；不是独立的目录覆盖规则。使用路径条件时，请同时考虑其他路径的访问策略。</div>' +
       '</div>' +
-      '<div id="stAclRuleWrap" style="display:' + (isCustom ? 'block' : 'none') + ';margin-top:12px">' +
-        '<label class="fld" style="margin:0"><span>read 规则表达式</span>' +
-          '<textarea class="code" id="stAclRead" style="width:100%;min-height:56px;font-size:12px" spellcheck="false" placeholder="true / false 或 如 resource.openid == auth.uid">' + esc(readV) + '</textarea>' +
-          '<span class="fdesc">true=恒允许 · false=恒拒绝 · 其余为安全规则表达式</span></label>' +
-        '<label class="fld" style="margin:8px 0 0"><span>write 规则表达式</span>' +
-          '<textarea class="code" id="stAclWrite" style="width:100%;min-height:56px;font-size:12px" spellcheck="false" placeholder="true / false 或 如 resource.openid == auth.uid">' + esc(writeV) + '</textarea>' +
-          '<span class="fdesc">可引用 <code>auth.uid</code> / <code>resource.openid</code> / <code>resource.path</code> 等。示例：<code>/^private\\//.test(resource.path) &amp;&amp; resource.openid == auth.uid</code></span></label>' +
-        '<p class="hint" style="margin:8px 0 0">CUSTOM 会替代上方预设，read 和 write 是覆盖整个环境的完整规则，不是单独的目录覆盖。设置路径条件时，请同时考虑其他路径的访问策略；保存前检查规则，避免误开放文件。</p>' +
-      '</div>' +
+      '<div class="perm-actions"><span id="stAclChangeNote">当前权限与云端配置一致</span><button class="btn pri sm" id="stAclSave" disabled>保存权限</button></div>' +
     '</div>';
-  $('#stAclSel').addEventListener('change', function () {
-    $('#stAclRuleWrap').style.display = this.value === 'CUSTOM' ? 'block' : 'none';
-  });
+
+  const initial = { acl, read: readV.trim(), write: writeV.trim() };
+  const syncEditor = () => {
+    const selected = $('#stAclBox input[name="storageAcl"]:checked');
+    const mode = selected ? selected.value : '';
+    $$('#stAclBox .perm-choice').forEach(card => {
+      card.classList.toggle('selected', !!card.querySelector('input:checked'));
+    });
+    $('#stAclRuleWrap').style.display = mode === 'CUSTOM' ? '' : 'none';
+    const selectedChoice = ACL_PRESETS.find(p => p.v === mode);
+    $('#stAclSummary').textContent = selectedChoice
+      ? (mode === 'CUSTOM'
+          ? '自定义规则将控制当前环境的全部文件。'
+          : selectedChoice.title + ' 将作为当前环境全部文件的默认权限。')
+      : '无法识别当前权限，请选择一个权限档位。';
+    const current = {
+      acl: mode,
+      read: mode === 'CUSTOM' ? $('#stAclRead').value.trim() : '',
+      write: mode === 'CUSTOM' ? $('#stAclWrite').value.trim() : ''
+    };
+    const original = {
+      acl: initial.acl,
+      read: initial.acl === 'CUSTOM' ? initial.read : '',
+      write: initial.acl === 'CUSTOM' ? initial.write : ''
+    };
+    const changed = !!mode && JSON.stringify(current) !== JSON.stringify(original);
+    const valid = mode !== 'CUSTOM' || (current.read && current.write);
+    $('#stAclSave').disabled = !changed || !valid;
+    $('#stAclChangeNote').textContent = !valid
+      ? '请填写完整的 read / write 规则'
+      : (changed ? '有尚未保存的修改' : '当前权限与云端配置一致');
+  };
+  $$('#stAclBox input[name="storageAcl"]').forEach(input => input.addEventListener('change', syncEditor));
+  $('#stAclRead').addEventListener('input', syncEditor);
+  $('#stAclWrite').addEventListener('input', syncEditor);
+  syncEditor();
   $('#stAclSave').addEventListener('click', saveStorageAcl);
 }
 
 async function saveStorageAcl() {
-  const acl = $('#stAclSel').value;
+  const selected = $('#stAclBox input[name="storageAcl"]:checked');
+  if (!selected) return toast('请先选择权限档位', 'err');
+  const acl = selected.value;
   const body = { acl };
   if (acl === 'CUSTOM') {
     const read = $('#stAclRead').value.trim();
@@ -572,7 +613,9 @@ async function saveStorageAcl() {
     if (!read || !write) return toast('自定义规则须填写 read 与 write', 'err');
     body.rule = { read: parseAclVal(read), write: parseAclVal(write) };
   }
-  if (!confirm('确认将环境存储权限改为 ' + acl + ' ？此操作影响整个环境的文件读写。')) return;
+  const label = ACL_PRESETS.find(p => p.v === acl);
+  const scope = acl === 'CUSTOM' ? '当前环境所有文件' : '当前环境全部文件的默认权限';
+  if (!confirm('即将将云存储权限设置为「' + (label ? label.title : acl) + '」。\n作用范围：' + scope + '。\n\n确认保存？')) return;
   const btn = $('#stAclSave'); btn.disabled = true; btn.textContent = '保存中…';
   try {
     await apiPut('/api/storage/acl', body);

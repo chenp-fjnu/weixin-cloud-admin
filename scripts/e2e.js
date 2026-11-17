@@ -87,6 +87,17 @@ function get(p) {
     await page.waitForSelector('#dbBody td:has-text("Alice")', { timeout: 8000 });
     const rows = await page.locator('#dbBody tr').count();
     check('数据库页渲染出文档行（>=3）', rows >= 3, 'got ' + rows);
+
+    // 5. 存储权限：权限档位以卡片呈现，切换 CUSTOM 时才显示规则编辑器
+    await page.click('[data-tab="storage"]');
+    await page.waitForSelector('#stAclBox .perm-choice');
+    const aclChoices = await page.locator('#stAclBox .perm-choice').count();
+    check('存储权限展示 5 个权限档位', aclChoices === 5, 'got ' + aclChoices);
+    await page.locator('#stAclBox input[name="storageAcl"][value="CUSTOM"]').check();
+    check('选择 CUSTOM 后展示规则编辑器',
+      await page.locator('#stAclRuleWrap').isVisible() && await page.locator('#stAclRead').isVisible());
+    await page.locator('#stAclBox input[name="storageAcl"][value="READONLY"]').check();
+    check('恢复原权限后保存按钮禁用', await page.locator('#stAclSave').isDisabled());
     check('无 pageerror', errors.length === 0, errors.join(' | ').slice(0, 300));
   } catch (e) {
     failures++;
