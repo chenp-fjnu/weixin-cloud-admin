@@ -28,7 +28,7 @@
 | --- | --- |
 | 概览 | 各集合文档数统计、云存储顶层目录数 / 总文件数 / 总大小、子目录聚合视图 |
 | 云数据库 | 集合列表 → 文档分页表格（支持字段搜索、排序）→ 文档详情抽屉（JSON 编辑 / 新增 / 删除）；「索引 / 权限」面板：查看 / 创建 / 删除集合索引；按当前集合查看 / 修改安全规则预设，CUSTOM 分别设置 read 与 write 表达式 |
-| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效）；顶部 ACL 卡片：查看 / 修改环境级存储权限（READONLY / PRIVATE / ADMINWRITE / ADMINONLY / CUSTOM），明确影响当前环境全部文件 |
+| 云存储 | 逐级目录浏览、图片在线预览、上传文件、删除文件（临时签名 URL 预览，2 小时有效）；顶部 ACL 卡片：环境级 ACL 预设作为默认权限；CUSTOM 可在 read / write 规则中使用 `resource.path` 限制目录，但它替代预设且仍是覆盖整个环境的完整规则，不是独立的目录 ACL |
 | 云函数 | 函数列表 → 展开详情：基础信息 / 配置调整（内存 / 超时）/ 环境变量 / 触发器（增删）/ 在线调用测试（JSON 参数 → 结果 + 日志 + 耗时）/ 删除函数 |
 | 环境配置 | 新增 / 编辑 / 删除云环境与凭证、设默认、测试凭证连通性；列表仅显示脱敏 SecretId |
 
@@ -161,7 +161,7 @@ npm test        # check + smoke + e2e 一起跑
 | GET | `/api/collection/permission?name=` | 集合安全规则（`acl`: READONLY/PRIVATE/ADMINWRITE/ADMINONLY/CUSTOM + `rule` 表达式） |
 | PUT | `/api/collection/permission?name=` | 修改集合安全规则（body: `{ acl, rule? }`；CUSTOM 时 `rule: { read, write }` 两个非空表达式均必填，缺省 400） |
 | GET | `/api/storage/acl` | 环境级存储权限（`acl` + CUSTOM 时 `rule: { read, write }`） |
-| PUT | `/api/storage/acl` | 修改存储权限（body: `{ acl, rule? }`；CUSTOM 时 `rule.read` / `rule.write` 必填，boolean 或规则表达式） |
+| PUT | `/api/storage/acl` | 修改存储权限（body: `{ acl, rule? }`；CUSTOM 时 `rule.read` / `rule.write` 必填，boolean 或规则表达式，可通过 `resource.path` 编写路径条件；仍为环境级完整规则） |
 | GET | `/api/functions` | 云函数列表（`functions: [{ name }]` + `total`） |
 | GET | `/api/function?name=` | 函数详情（基础信息 + 环境变量 + 触发器列表；触发器列举失败不阻断） |
 | POST | `/api/function/config?name=` | 更新函数配置（body: `{ timeout?, memorySize?, envVariables? }`，仅更新传入字段） |

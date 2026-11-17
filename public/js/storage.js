@@ -540,7 +540,7 @@ function renderStorageAcl(acl, rule) {
     '<div class="panel" style="margin:0 0 16px;padding:14px 16px">' +
       '<div class="pagehead" style="margin:0 0 12px"><div><h2 style="margin:0">存储权限（ACL）</h2>' +
       '<div class="sub">环境级云存储读写权限 · 影响当前环境全部文件的应用端访问</div></div></div>' +
-      '<p class="hint">此权限不是目录级设置：更改后会影响整个云存储环境。自定义规则分别控制文件读取和写入；保存前请确认不会意外开放敏感文件。</p>' +
+      '<p class="hint">READONLY / PRIVATE / ADMINWRITE / ADMINONLY 是整个环境的默认权限。平台没有独立的目录 ACL；需要按敏感目录细分时，选择 CUSTOM 并在规则中加入 <code>resource.path</code> 条件。</p>' +
 
       '<h2 class="sect">权限设置<span class="ln"></span></h2>' +
       '<div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
@@ -553,7 +553,8 @@ function renderStorageAcl(acl, rule) {
           '<span class="fdesc">true=恒允许 · false=恒拒绝 · 其余为安全规则表达式</span></label>' +
         '<label class="fld" style="margin:8px 0 0"><span>write 规则表达式</span>' +
           '<textarea class="code" id="stAclWrite" style="width:100%;min-height:56px;font-size:12px" spellcheck="false" placeholder="true / false 或 如 resource.openid == auth.uid">' + esc(writeV) + '</textarea>' +
-          '<span class="fdesc">可引用 <code>auth.uid</code> / <code>resource.openid</code> 等</span></label>' +
+          '<span class="fdesc">可引用 <code>auth.uid</code> / <code>resource.openid</code> / <code>resource.path</code> 等。示例：<code>/^private\\//.test(resource.path) &amp;&amp; resource.openid == auth.uid</code></span></label>' +
+        '<p class="hint" style="margin:8px 0 0">CUSTOM 会替代上方预设，read 和 write 是覆盖整个环境的完整规则，不是单独的目录覆盖。设置路径条件时，请同时考虑其他路径的访问策略；保存前检查规则，避免误开放文件。</p>' +
       '</div>' +
     '</div>';
   $('#stAclSel').addEventListener('change', function () {
