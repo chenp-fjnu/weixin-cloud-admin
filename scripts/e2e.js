@@ -87,6 +87,17 @@ function get(p) {
     await page.waitForSelector('#dbBody td:has-text("Alice")', { timeout: 8000 });
     const rows = await page.locator('#dbBody tr').count();
     check('数据库页渲染出文档行（>=3）', rows >= 3, 'got ' + rows);
+    const dbHeaders = await page.locator('#dbHead th').allTextContents();
+    check('用户标识列优先显示', dbHeaders[0] && dbHeaders[0].includes('OpenID'), dbHeaders.join(','));
+    check('castQuestion 显示在动态列中', dbHeaders.includes('castQuestion'), dbHeaders.join(','));
+    check('复杂 JSON / 技术字段不铺成动态列',
+      !dbHeaders.includes('profile') && !dbHeaders.includes('accessToken') && !dbHeaders.includes('_id'),
+      dbHeaders.join(','));
+    await page.locator('#dbBody tr').first().locator('.opcell .btn').first().click();
+    await page.waitForSelector('#docMask.show');
+    const docJson = await page.locator('#docText').inputValue();
+    check('隐藏字段仍保留在 JSON 详情', docJson.includes('"profile"') && docJson.includes('"accessToken"'));
+    await page.click('#docClose');
 
     // 5. 存储权限：权限档位以卡片呈现，切换 CUSTOM 时才显示规则编辑器
     await page.click('[data-tab="storage"]');

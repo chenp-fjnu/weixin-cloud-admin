@@ -21,9 +21,9 @@ function state(envId) {
     s = {
       collections: {
         demo: [
-          { _id: 'demo1', name: 'Alice', createdAt: '2024-01-01T00:00:00Z', n: 1 },
-          { _id: 'demo2', name: 'Bob', createdAt: '2024-02-01T00:00:00Z', n: 2 },
-          { _id: 'demo3', name: 'Charlie', createdAt: '2024-03-01T00:00:00Z', n: 3 }
+          { _id: 'demo1', _openid: 'openid-alice', castQuestion: 'Where are you from?', name: 'Alice', createdAt: '2024-01-01T00:00:00Z', n: 1, profile: { city: 'Fuzhou' }, accessToken: 'mock-token-1' },
+          { _id: 'demo2', _openid: 'openid-bob', castQuestion: 'What do you like?', name: 'Bob', createdAt: '2024-02-01T00:00:00Z', n: 2, profile: { city: 'Xiamen' }, accessToken: 'mock-token-2' },
+          { _id: 'demo3', _openid: 'openid-charlie', castQuestion: 'What is your hobby?', name: 'Charlie', createdAt: '2024-03-01T00:00:00Z', n: 3, profile: { city: 'Quanzhou' }, accessToken: 'mock-token-3' }
         ]
       },
       storage: new Map(),

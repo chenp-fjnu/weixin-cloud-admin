@@ -13,9 +13,11 @@ const KNOWN_COLS = [];
 
 let dbInited = false;
 let dbSeq = 0; // 请求序号：快速翻页/切环境时丢弃过期响应，避免旧数据覆盖新数据
+let _colsCollection = '';
 // 切环境时由 main.js 调用：复位 dbInited 与 S.db 状态（模块级 let 跨文件不可直接赋值，必须走封装）
 function resetDb() {
   dbInited = false;
+  _colsCollection = '';
   dbSeq++; // 使所有在途请求过期
   S.db.collection = ''; S.db.page = 1; S.db.docs = []; S.db.cols = [];
   S.db.sort = ''; S.db.sortDir = 'desc'; S.db.q = ''; S.db.field = ''; S.db.fieldsSet = null;
@@ -73,6 +75,10 @@ async function loadDb() {
   if (!name) {
     $('#dbBody').innerHTML = '<tr><td colspan="15" class="empty">请先选择集合</td></tr>';
     return;
+  }
+  if (_colsCollection !== name) {
+    _colsCollection = name;
+    S.db.cols = [];
   }
   // 加载骨架屏：按上一轮列数（无则 6 列）生成微光占位行，避免空白跳变
   const body = $('#dbBody');
@@ -165,11 +171,13 @@ function renderDbChips() {
 }
 
 // 字段并集跨页累积（S.db.fieldsSet），让「筛选字段」「排序字段」下拉不因翻页丢项。
-// 系统/内部字段（_id、_openid 等）不进入下拉，也不进表格列。
+// 系统字段默认隐藏；OpenID / OwnerID 作为用户标识保留在下拉与表格中。
 function fillDbFields(docs) {
   const f = $('#dbField'), sortSel = $('#dbSort');
   if (!S.db.fieldsSet) S.db.fieldsSet = new Set();
-  docs.forEach(d => Object.keys(d).forEach(k => { if (!isSystemField(k)) S.db.fieldsSet.add(k); }));
+  docs.forEach(d => Object.keys(d).forEach(k => {
+    if (!isSystemField(k) || isOwnerField(k)) S.db.fieldsSet.add(k);
+  }));
   const fields = Array.from(S.db.fieldsSet);
   const prevField = f.value;
   f.innerHTML = '<option value="">（全字段）</option>';
@@ -197,15 +205,80 @@ function pickTimeField(fields) {
   return '';
 }
 
-// 表格列：排除系统字段，按当前页首次出现顺序动态生成
+const OWNER_FIELDS = new Set(['openid', 'ownerid', 'owneropenid']);
+function normalizeFieldName(name) { return String(name).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function isOwnerField(name) { return OWNER_FIELDS.has(normalizeFieldName(name)); }
+
+function findOwnerField(docs) {
+  const counts = new Map();
+  docs.forEach(d => Object.keys(d).forEach(k => {
+    if (isOwnerField(k)) counts.set(k, (counts.get(k) || 0) + 1);
+  }));
+  return Array.from(counts.keys()).sort((a, b) => {
+    const countDiff = counts.get(b) - counts.get(a);
+    if (countDiff) return countDiff;
+    const priority = name => normalizeFieldName(name) === 'openid' ? 0 : 1;
+    return priority(a) - priority(b);
+  })[0] || '';
+}
+
+function isReadableField(name) {
+  if (!/^[A-Za-z\u4e00-\u9fff][A-Za-z0-9_\u4e00-\u9fff]{0,39}$/.test(name) ||
+      isSystemField(name) || isOwnerField(name)) return false;
+  if (name.length === 1 && !/[\u4e00-\u9fff]/.test(name)) return false;
+  const lower = name.toLowerCase();
+  if (normalizeFieldName(name) === 'id' || /(?:^|[_-])id$/i.test(name) || /(?:Id|ID)$/.test(name)) return false;
+  return !/(token|secret|password|passwd|hash|nonce|signature|trace|session|internal|debug|payload|credential)/.test(lower);
+}
+
 function fieldColumns(docs) {
-  const cols = [];
+  const keys = [];
   const seen = new Set();
   docs.forEach(d => Object.keys(d).forEach(k => {
-    if (isSystemField(k)) return;
-    if (!seen.has(k)) { seen.add(k); cols.push(k); }
+    if (!seen.has(k)) { seen.add(k); keys.push(k); }
   }));
+  const owner = findOwnerField(docs);
+  const minPresence = Math.max(1, Math.ceil(docs.length * 0.5));
+  const candidates = keys.map((key, index) => {
+    const values = docs.filter(d => Object.prototype.hasOwnProperty.call(d, key)).map(d => d[key]);
+    const scalarCount = values.filter(v => v !== null && v !== undefined &&
+      ['string', 'number', 'boolean'].includes(typeof v)).length;
+    const hasComplex = values.some(v => v !== null && v !== undefined &&
+      !['string', 'number', 'boolean'].includes(typeof v));
+    return { key, index, present: values.length, scalarCount, hasComplex };
+  }).filter(x => {
+    const pinned = normalizeFieldName(x.key) === 'castquestion';
+    return x.key !== owner && isReadableField(x.key) &&
+      (pinned ? x.present > 0 : x.present >= minPresence && x.scalarCount > 0 && !x.hasComplex);
+  }).map(x => Object.assign(x, { pinned: normalizeFieldName(x.key) === 'castquestion' }));
+
+  const preferred = ['castquestion', 'name', 'title', 'nickname', 'username', 'status', 'type', 'category',
+    'price', 'amount', 'count', 'createdat', 'updatedat', 'createtime', 'updatetime', 'description'];
+  candidates.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    const ap = preferred.indexOf(normalizeFieldName(a.key));
+    const bp = preferred.indexOf(normalizeFieldName(b.key));
+    const aRank = ap < 0 ? preferred.length : ap;
+    const bRank = bp < 0 ? preferred.length : bp;
+    return aRank - bRank || b.present - a.present || a.index - b.index;
+  });
+
+  const cols = [];
+  if (owner) {
+    cols.push({
+      key: owner,
+      label: normalizeFieldName(owner).includes('owner') ? 'OwnerID' : 'OpenID',
+      owner: true
+    });
+  }
+  candidates.slice(0, 5).forEach(x => cols.push({ key: x.key, label: x.key, owner: false, pinned: x.pinned }));
   return cols;
+}
+
+function ownerValue(doc, key) {
+  if (Object.prototype.hasOwnProperty.call(doc, key)) return doc[key];
+  const fallback = Object.keys(doc).find(k => isOwnerField(k));
+  return fallback ? doc[fallback] : undefined;
 }
 function cellText(col, v) {
   if (v === null || v === undefined) return '';
@@ -225,20 +298,33 @@ function pillFor(field, value) {
 }
 
 function renderDbTable() {
-  S.db.cols = fieldColumns(S.db.docs);
+  if (S.db.docs.length) {
+    const detected = fieldColumns(S.db.docs);
+    if (!S.db.cols.length) S.db.cols = detected;
+    else {
+      const owner = !S.db.cols.some(c => c.owner) && detected.find(c => c.owner);
+      if (owner) S.db.cols.unshift(owner);
+      const pinned = detected.filter(c => c.pinned && !S.db.cols.some(existing => existing.key === c.key));
+      if (pinned.length) {
+        const ownerIndex = S.db.cols.findIndex(c => c.owner);
+        S.db.cols.splice(ownerIndex >= 0 ? ownerIndex + 1 : 0, 0, ...pinned);
+      }
+    }
+  }
   const totalCols = S.db.cols.length + 1; // 操作列
   renderDbChips();
   // 页头副标题：文档总数
   $('#dbCount').textContent = S.db.docs.length ? ('共 ' + fmtNum(S.db.total) + ' 条文档 · 当前集合 ' + S.db.collection) : ('集合 ' + S.db.collection + ' 无文档');
-  // 动态表头：业务字段（已剔除 _id / _openid 等系统字段）+ 操作
+  // 用户标识优先，其余为常见标量业务字段；完整文档仍可在详情中查看
   // 列头可点击排序：当前排序列高亮并显示方向箭头（▲ 升序 / ▼ 降序）
   const effSort = S.db.sort || pickTimeField(S.db.fieldsSet) || '';
   const effDir = S.db.sortDir;
   $('#dbHead').innerHTML = S.db.cols.map(c => {
-    const on = effSort === c;
+    const on = effSort === c.key;
     const arrow = on ? (effDir === 'asc' ? '▲' : '▼') : ''; // ▲ 升序 / ▼ 降序
-    return '<th class="sortable' + (on ? ' on' : '') + '" data-col="' + esc(c) + '" title="点击按 ' + esc(c) + ' 排序">' +
-      esc(c) + '<span class="sar">' + arrow + '</span></th>';
+    return '<th class="sortable' + (on ? ' on' : '') + (c.owner ? ' owner-col' : '') +
+      '" data-col="' + esc(c.key) + '" title="点击按 ' + esc(c.key) + ' 排序">' +
+      esc(c.label) + '<span class="sar">' + arrow + '</span></th>';
   }).join('') + '<th class="opcell">操作</th>';
   $$('#dbHead th.sortable').forEach(th => th.addEventListener('click', () => sortByCol(th.dataset.col)));
   const body = $('#dbBody'); body.innerHTML = '';
@@ -253,19 +339,20 @@ function renderDbTable() {
     const tr = document.createElement('tr');
     S.db.cols.forEach(col => {
       const td = document.createElement('td');
-      const pill = pillFor(col, d[col]);
+      const value = col.owner ? ownerValue(d, col.key) : d[col.key];
+      const pill = pillFor(col.key, value);
       if (pill) { td.innerHTML = pill; }
-      else if (typeof d[col] === 'string' && /^cloud:\/\//.test(d[col]) && isImage(d[col])) {
+      else if (typeof value === 'string' && /^cloud:\/\//.test(value) && isImage(value)) {
         // cloud:// 图片（如 imageId）→ 缩略图，本页图片统一批量取临时链接后填充
-        td.title = d[col];
+        td.title = value;
         td.innerHTML = '<span class="spin"></span>';
-        const rel = d[col].replace(/^cloud:\/\/[^/]+\//i, '');
+        const rel = value.replace(/^cloud:\/\/[^/]+\//i, '');
         td.dataset.rel = rel;
         imgRels.push(rel);
       }
       else {
-        const t = cellText(col, d[col]);
-        td.className = 'val'; td.textContent = t;
+        const t = cellText(col.key, value);
+        td.className = col.owner ? 'owner-id' : 'val'; td.textContent = t;
         if (t) td.title = t; else td.innerHTML = '<span class="muted">—</span>';
       }
       tr.appendChild(td);
